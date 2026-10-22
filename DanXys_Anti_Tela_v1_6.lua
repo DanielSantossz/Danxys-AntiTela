@@ -1,5 +1,5 @@
 --[[
-    DanXys Anti Tela v1.7 | Electric Particles + Neon UI + Server Monitor
+    DanXys Anti Tela v1.8 | Full-Panel Particles + Circular Radar + Neon UI
     Interface Luau client-side. Usa apenas Players e propriedades publicas.
     Nao identifica espectadores invisiveis nem ferramentas administrativas.
     Pop-ups compactos, com barra de 1.5 segundo.
@@ -112,6 +112,9 @@ local function button(parent, content, x, y, w, h, accent)
     end)
     return b
 end
+local particleSurfaces = {} -- camadas criadas primeiro; conteúdo desenhado por cima
+local minimizedFX = false
+
 local function card(parent, x, y, w, h, heading, headingColor, strokeColor)
     -- Aura externa, por baixo do cartão. Cria profundidade sem shaders.
     local aura = el("Frame", {
@@ -140,6 +143,23 @@ local function card(parent, x, y, w, h, heading, headingColor, strokeColor)
             ColorSequenceKeypoint.new(1, Color3.fromRGB(1, 3, 10))
         })
     }, f)
+    -- Uma camada interna de partículas é inserida antes de textos e botões.
+    -- Assim, as faíscas ficam no fundo preto de cada cartão.
+    local cardFX = el("Frame", {
+        Name = "DanXysCardParticles",
+        Position = UDim2.fromOffset(6, 6),
+        Size = UDim2.fromOffset(w - 12, h - 12),
+        BackgroundTransparency = 1,
+        ClipsDescendants = true,
+        BorderSizePixel = 0,
+        ZIndex = 1
+    }, f)
+    table.insert(particleSurfaces, {
+        layer = cardFX,
+        width = w - 12,
+        height = h - 12,
+        holder = parent
+    })
     -- pequeno brilho lateral fixo, sem loop de renderizacao
     local rail = el("Frame", {
         Position = UDim2.fromOffset(0, 17), Size = UDim2.fromOffset(2, h-34),
@@ -241,8 +261,25 @@ if workspace.CurrentCamera then
     listen(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), fitScreen)
 end
 
+-- PARTÍCULAS DE FUNDO (primeira camada; os controles aparecem na frente)
+local fullPanelFX = el("Frame", {
+    Name = "FullPanelParticles",
+    Position = UDim2.fromOffset(8, 8),
+    Size = UDim2.fromOffset(PANEL_W - 16, PANEL_H - 16),
+    BackgroundTransparency = 1,
+    ClipsDescendants = true,
+    BorderSizePixel = 0,
+    ZIndex = 1
+}, panel)
+table.insert(particleSurfaces, {
+    layer = fullPanelFX,
+    width = PANEL_W - 16,
+    height = PANEL_H - 16,
+    holder = panel
+})
+
 -- ======================================================================
--- V1.7 | EFEITOS REAIS (NAO SAO APENAS PARTE DA ARTE DO LOGOTIPO)
+-- V1.8 | EFEITOS REAIS (NAO SAO APENAS PARTE DA ARTE DO LOGOTIPO)
 -- Luzes em movimento, faiscas, arco eletrico e sweep de brilho do cabecalho.
 -- Os elementos sao leves, limitados ao topo e desligam com o menu.
 -- ======================================================================
@@ -292,11 +329,11 @@ local function sparkParticle()
     end)
 end
 
--- Mantem cerca de 10 a 15 faíscas na interface, sem usar RenderStepped.
+-- Cabeçalho: pequenas faíscas extras, em paralelo à camada geral.
 task.spawn(function()
     while alive and fxLayer.Parent do
         sparkParticle()
-        task.wait(0.11)
+        task.wait(0.28)
     end
 end)
 
@@ -444,7 +481,7 @@ else
         Color = ColorSequence.new(C.white, C.cyan)
     }, subtitle)
 end
-local version = text(panel, "v1.7  /  SERVER MONITOR", UDim2.fromOffset(490, 47),
+local version = text(panel, "v1.8  /  SERVER MONITOR", UDim2.fromOffset(490, 47),
     UDim2.fromOffset(193, 25), 13, C.cyan, true)
 version.Font = Enum.Font.GothamBlack
 local minimize = button(panel, "—", 669, 15, 30, 29, C.blue)
@@ -520,8 +557,31 @@ local radarSpin = TweenService:Create(radarPivot,
         Enum.EasingDirection.InOut, -1), {Rotation = 360})
 radarSpin:Play()
 table.insert(titleTweens, radarSpin)
-text(radar, "✦", UDim2.fromOffset(24, 21),
-    UDim2.fromOffset(32, 31), 24, C.cyan, true)
+-- Substitui o caractere ✦ (que aparecia como quadradinho no Mac)
+-- por duas formas circulares reais. O miolo é independente da haste.
+local radarHalo = el("Frame", {
+    Name = "RadarHalo", AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(18, 18),
+    BackgroundColor3 = C.blue,
+    BackgroundTransparency = 0.80,
+    BorderSizePixel = 0, ZIndex = 6
+}, radar)
+el("UICorner", {CornerRadius = UDim.new(1, 0)}, radarHalo)
+local radarDot = el("Frame", {
+    Name = "RadarDot", AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(7, 7),
+    BackgroundColor3 = C.cyan, BackgroundTransparency = 0,
+    BorderSizePixel = 0, ZIndex = 7
+}, radar)
+el("UICorner", {CornerRadius = UDim.new(1, 0)}, radarDot)
+local dotPulse = TweenService:Create(radarHalo,
+    TweenInfo.new(1.15, Enum.EasingStyle.Sine,
+        Enum.EasingDirection.InOut, -1, true),
+    {Size = UDim2.fromOffset(24, 24), BackgroundTransparency = 0.91})
+dotPulse:Play()
+table.insert(titleTweens, dotPulse)
 
 local statsCard = card(dashboard, 379, 4, 359, 139, "♟  PLAYERS")
 local playerCountLabel = text(statsCard, "0 / 0", UDim2.fromOffset(16, 37),
@@ -633,6 +693,104 @@ local historyLayout = el("UIListLayout", {
     SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 5)
 }, historyScroll)
 local historyClear = button(historyCard, "CLEAR HISTORY", 15, 472, 638, 33, C.deepBlue)
+
+-- ======================================================================
+-- V1.8 | PARTÍCULAS POR TODO O MENU, ATRÁS DAS INFORMAÇÕES
+-- - 1 agendador de baixa frequência (não usa RenderStepped)
+-- - partículas limitadas em cada cartão e no espaço entre cartões
+-- - nunca cobre os textos ou botões
+-- - desativadas quando o painel está minimizado
+-- ======================================================================
+local fxRandom = Random.new()
+local MAX_ACTIVE_PARTICLES = 24
+local liveParticleCount = 0
+local surfaceCursor = 0
+
+local function ancestorsVisible(layer)
+    if minimizedFX or not layer or not layer.Parent then return false end
+    local current = layer
+    while current and current ~= gui do
+        if current:IsA("GuiObject") and not current.Visible then
+            return false
+        end
+        current = current.Parent
+    end
+    return true
+end
+
+local function fireBackgroundParticle(surface)
+    if not alive or liveParticleCount >= MAX_ACTIVE_PARTICLES then return end
+    if not ancestorsVisible(surface.layer) then return end
+
+    local w, h = surface.width, surface.height
+    local sx = fxRandom:NextInteger(9, math.max(10, w - 10))
+    local sy = fxRandom:NextInteger(10, math.max(11, h - 10))
+    local size = fxRandom:NextInteger(2, 4)
+    local color = fxRandom:NextInteger(1, 5) == 1 and C.white or C.cyan
+    local flight = fxRandom:NextNumber(1.3, 2.2)
+    local driftX = fxRandom:NextInteger(-36, 36)
+    local driftY = fxRandom:NextInteger(-36, -10)
+
+    -- Halo suave, com um ponto central. Ambos atrás do conteúdo do cartão.
+    local glow = el("Frame", {
+        Name = "BackgroundSpark",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromOffset(sx, sy),
+        Size = UDim2.fromOffset(size + 9, size + 9),
+        BackgroundColor3 = color,
+        BackgroundTransparency = 0.88,
+        BorderSizePixel = 0, ZIndex = 1
+    }, surface.layer)
+    el("UICorner", {CornerRadius = UDim.new(1, 0)}, glow)
+    local dot = el("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromOffset(size, size),
+        BackgroundColor3 = color,
+        BackgroundTransparency = 0.18,
+        BorderSizePixel = 0, ZIndex = 1
+    }, glow)
+    el("UICorner", {CornerRadius = UDim.new(1, 0)}, dot)
+    liveParticleCount = liveParticleCount + 1
+
+    local drift = TweenService:Create(glow,
+        TweenInfo.new(flight, Enum.EasingStyle.Sine,
+            Enum.EasingDirection.Out), {
+            Position = UDim2.fromOffset(sx + driftX, sy + driftY),
+            BackgroundTransparency = 1,
+            Size = UDim2.fromOffset(2, 2)
+        })
+    local fadeDot = TweenService:Create(dot,
+        TweenInfo.new(flight, Enum.EasingStyle.Linear), {
+            BackgroundTransparency = 1
+        })
+    drift:Play()
+    fadeDot:Play()
+    task.delay(flight + 0.06, function()
+        if glow.Parent then glow:Destroy() end
+        liveParticleCount = math.max(0, liveParticleCount - 1)
+    end)
+end
+
+-- Distribuição round-robin entre cartões visíveis + plano de fundo.
+-- A tela atual recebe todos os efeitos; abas ocultas ficam suspensas.
+task.spawn(function()
+    while alive and gui.Parent do
+        if not minimizedFX then
+            local shown = {}
+            for _, surface in ipairs(particleSurfaces) do
+                if ancestorsVisible(surface.layer) then
+                    table.insert(shown, surface)
+                end
+            end
+            if #shown > 0 then
+                surfaceCursor = (surfaceCursor % #shown) + 1
+                fireBackgroundParticle(shown[surfaceCursor])
+            end
+        end
+        task.wait(0.09)
+    end
+end)
 
 -- CanvasSize baseado no conteudo; sem loop por frame.
 local function autoCanvas(scroll, layout)
@@ -913,6 +1071,7 @@ listen(settingsNotify.MouseButton1Click, flipNotifications)
 local minimized = false
 listen(minimize.MouseButton1Click, function()
     minimized = not minimized
+    minimizedFX = minimized
     panel.Size = minimized and UDim2.fromOffset(PANEL_W, 113)
         or UDim2.fromOffset(PANEL_W, PANEL_H)
     underGlow.Visible = not minimized
@@ -997,6 +1156,6 @@ end)
 setMode("PUBLIC")
 showTab("DASHBOARD")
 refreshStatus()
-notify("DANXYS ANTI TELA", "Server Monitor v1.7 ativo", C.cyan)
-print("[DanXys Anti Tela v1.7] Sensor active | Server:", serverType())
+notify("DANXYS ANTI TELA", "Server Monitor v1.8 ativo", C.cyan)
+print("[DanXys Anti Tela v1.8] Sensor active | Server:", serverType())
 print("[DanXys] Spectate: UNKNOWN (not observable via Players)")
