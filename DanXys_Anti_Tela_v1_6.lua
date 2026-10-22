@@ -15,7 +15,7 @@ local TextService = game:GetService("TextService")
 -- fornecido ao Roblox Creator Hub e cole o ID abaixo.
 -- Exemplo: "rbxassetid://123456789012345"
 -- Sem o ID, o titulo futurista e desenhado usando fonte nativa.
-local LOGO_IMAGE_ID = ""
+local LOGO_IMAGE_ID = "rbxassetid://6444884337"
 
 -- Reexecutar sem duplicar o sensor e suas conexoes.
 if _G.DanXysCleanup then pcall(_G.DanXysCleanup) end
