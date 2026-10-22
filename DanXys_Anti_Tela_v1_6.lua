@@ -1,5 +1,5 @@
 --[[
-  DANXYS ANTI TELA | FULL NEON EDITION
+  DANXYS ANTI TELA | FULL NEON - CORNER PRO v2.2
   Integracao de todas as rotinas e controles do arquivo fornecido pelo usuario.
   Validacao de key e chamada a sirius.menu/gen2 removidas.
   UI nativa DanXys, com logo rbxassetid://133068819773560.
@@ -12,6 +12,9 @@
 -- Evita duas janelas e tenta desmontar hooks/sessoes da execucao anterior.
 do
     local env = (type(getgenv) == "function" and getgenv()) or _G
+    if type(env.DanXysGuidedCleanup) == "function" then
+        pcall(env.DanXysGuidedCleanup)
+    end
     if type(env.DanXysFullCleanup) == "function" then
         pcall(env.DanXysFullCleanup)
     end
@@ -4054,7 +4057,7 @@ local function f64()
       local v254 = ...
 
       if p139 == ballService.RF.Interact and GetNamecallMethod_2 == "InvokeServer" then
-        if type(v254) == "table" and v254.Move == "Spike" and v182 then
+        if type(v254) == "table" and v254.Move == "Spike" and v182 and not v255.enabled then
           local LookVector = currentCamera2.CFrame.LookVector
 
           v254.LookVector = LookVector
@@ -4118,7 +4121,7 @@ local function f67()
       local v258 = ...
 
       if p140 == ballService.RF.Interact and GetNamecallMethod_3 == "InvokeServer" then
-        if type(v258) == "table" and v258.Move == "Spike" and v184 then
+        if type(v258) == "table" and v258.Move == "Spike" and v184 and not v255.enabled then
           if v258.TiltDirection and v258.LookVector then
             local TiltDirection = v258.TiltDirection
 
@@ -4482,6 +4485,467 @@ do
     end
   end
 end
+
+-- DANXYS CORNER PRO / revisao da logica Auto Corner do script enviado.
+-- Nao cria contato remoto nem altera o voo da bola depois do lancamento.
+-- Seleciona alvo na quadra, calcula angulo e tenta reorientar SOMENTE Spike/ServeSpike.
+do
+    v255.margin = 6
+    v255.aimSpeed = 145
+    v255.clearance = 1.5
+    v255.showGuide = true
+    v255.netGuard = true
+    v255.calibrate = false
+    v255.lastStatus = "AGUARDANDO"
+    v255.lastTarget = nil
+    v255.lastPlan = nil
+    v255.aimedCount = 0
+    v255.lastError = nil
+    local guideFolder, targetDisk, targetText, pathParts
+    pathParts = {}
+    local lastVisual = 0
+    local visualConnection = nil
+    local supported = false
+
+    local function trackedConnection(c)
+        local env = (type(getgenv) == "function" and getgenv()) or _G
+        local session = env.LOCOPANI_SESSION
+        if session and type(session.links) == "table" then
+            table.insert(session.links, c)
+        end
+        return c
+    end
+
+    local function cleanupGuide()
+        if visualConnection then
+            pcall(function() visualConnection:Disconnect() end)
+            visualConnection = nil
+        end
+        if guideFolder then
+            pcall(function() guideFolder:Destroy() end)
+            guideFolder = nil
+        end
+        targetDisk = nil
+        targetText = nil
+        pathParts = {}
+    end
+    v255.cleanupGuide = cleanupGuide
+    local env = (type(getgenv) == "function" and getgenv()) or _G
+    env.DanXysGuidedCleanup = cleanupGuide
+
+    local function ballPart()
+        local char = localPlayer2.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return nil end
+        local best, nearest = nil, math.huge
+        for _, model in ipairs(workspaceService:GetChildren()) do
+            if model:IsA("Model") and model.Name:match("^CLIENT_BALL_%d+$") then
+                for _, part in ipairs(model:GetDescendants()) do
+                    if part:IsA("BasePart") and part.Name ~= "LOCOPANI.BALL"
+                        and part.Name ~= "DANXYS_BALL_ZONE" then
+                        local dist = (part.Position - root.Position).Magnitude
+                        if dist < nearest then
+                            best, nearest = part, dist
+                        end
+                    end
+                end
+            end
+        end
+        return best
+    end
+
+    local function courtInfo()
+        local courtPart = nil
+        local map = workspaceService:FindFirstChild("Map")
+        local court = map and map:FindFirstChild("Court")
+        if court and court:IsA("BasePart") then
+            courtPart = court
+        elseif court and court:IsA("Model") then
+            courtPart = court.PrimaryPart or court:FindFirstChildWhichIsA("BasePart", true)
+        end
+        if not courtPart then
+            local ok, physic = pcall(function()
+                return require(replicatedStorage.Common.Physics)
+            end)
+            if ok and type(physic) == "table" and type(physic._getCourtlines) == "function" then
+                local ok2, result = pcall(physic._getCourtlines)
+                if ok2 and typeof(result) == "Instance" and result:IsA("BasePart") then
+                    courtPart = result
+                end
+            end
+        end
+        if not courtPart or courtPart.Size.X < 10 or courtPart.Size.Z < 10 then
+            return nil
+        end
+        local halfX = courtPart.Size.X * 0.5
+        local halfZ = courtPart.Size.Z * 0.5
+        local surfaceY = courtPart.Size.Y * 0.5
+        local netHeight, netZ = nil, 0
+        local collision = map and map:FindFirstChild("BallCollideOnly")
+        local net = collision and collision:FindFirstChild("Net")
+        if net and net:IsA("BasePart") then
+            netHeight = net.Position.Y + net.Size.Y * 0.5
+            local netLocal = courtPart.CFrame:PointToObjectSpace(net.Position)
+            netZ = netLocal.Z
+        end
+        return {part=courtPart, cf=courtPart.CFrame, halfX=halfX,
+            halfZ=halfZ, surfaceY=surfaceY, netHeight=netHeight, netZ=netZ}
+    end
+
+    local function optionsForTarget(info)
+        local char = localPlayer2.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return nil end
+        local localRoot = info.cf:PointToObjectSpace(root.Position)
+        local sign = localRoot.Z < info.netZ and 1 or -1
+        if math.abs(localRoot.Z - info.netZ) < 1 then
+            local teamIndex = localPlayer2.Team and localPlayer2.Team:GetAttribute("Index")
+            if teamIndex == 1 then sign = 1
+            elseif teamIndex == 2 then sign = -1 end
+        end
+        local insetX = info.halfX - v255.margin
+        local insetZ = info.halfZ - v255.margin
+        if insetX <= 2 or insetZ <= 2 then return nil end
+        local opponentSide = sign
+        local targetZFar = opponentSide * insetZ
+        local targetZNear = info.netZ + opponentSide * math.max(2.5, (info.halfZ - math.abs(info.netZ))*0.40)
+        targetZNear = math.clamp(targetZNear, -insetZ, insetZ)
+        local targets = {}
+        local zs = v255.reach == "Back" and {targetZFar}
+            or v255.reach == "Nearest" and {targetZNear}
+            or {targetZFar, targetZNear}
+        for _, depthZ in ipairs(zs) do
+            for _, side in ipairs({-1, 1}) do
+                if v255.side == "Auto" or (v255.side == "Left" and side < 0)
+                    or (v255.side == "Right" and side > 0) then
+                    local posLocal = Vector3.new(side*insetX, info.surfaceY+0.6, depthZ)
+                    local world = info.cf:PointToWorldSpace(posLocal)
+                    -- Verificacao geometrica da quadra, com margem de seguranca.
+                    local check = info.cf:PointToObjectSpace(world)
+                    if math.abs(check.X) <= insetX + 0.01 and
+                        math.abs(check.Z) <= insetZ + 0.01 and
+                        (check.Z-info.netZ)*opponentSide > 0 then
+                        table.insert(targets, {pos=world, localPos=posLocal,
+                            far=depthZ == targetZFar, side=side})
+                    end
+                end
+            end
+        end
+        return targets, root, sign
+    end
+
+    local function defenders(info, enemySide)
+        local points = {}
+        for _, p in ipairs(players:GetPlayers()) do
+            if p ~= localPlayer2 and (not localPlayer2.Team or p.Team ~= localPlayer2.Team) then
+                local char = p.Character
+                local root = char and char:FindFirstChild("HumanoidRootPart")
+                if root then
+                    local lp = info.cf:PointToObjectSpace(root.Position)
+                    if (lp.Z-info.netZ)*enemySide > 0 then
+                        table.insert(points, lp)
+                    end
+                end
+            end
+        end
+        return points
+    end
+
+    local function bestTarget(info)
+        local targets, root, sign = optionsForTarget(info)
+        if not targets or #targets == 0 then return nil end
+        local enemies = defenders(info, sign)
+        local origin = root.Position
+        local camera = workspaceService.CurrentCamera
+        local look = camera and camera.CFrame.LookVector or root.CFrame.LookVector
+        local flatLook = Vector3.new(look.X,0,look.Z)
+        local cameraDir = flatLook.Magnitude > .01 and flatLook.Unit or Vector3.new(0,0,-1)
+        local best, bestScore = nil, -math.huge
+        for _, candidate in ipairs(targets) do
+            local minimumDistance = 45
+            for _, d in ipairs(enemies) do
+                local distance = Vector2.new(candidate.localPos.X-d.X, candidate.localPos.Z-d.Z).Magnitude
+                minimumDistance = math.min(minimumDistance, distance)
+            end
+            local displacement = candidate.pos - origin
+            local horizontal = Vector3.new(displacement.X, 0, displacement.Z)
+            local cameraBonus = horizontal.Magnitude > .1 and cameraDir:Dot(horizontal.Unit)*0.75 or 0
+            local score = math.min(minimumDistance,45)*0.5 + cameraBonus + (candidate.far and 1.7 or 0)
+            if score > bestScore then
+                best, bestScore = candidate, score
+            end
+        end
+        return best and best.pos or nil
+    end
+
+    local function solveTrajectory(info, launch, target)
+        local delta = target - launch
+        local flat = Vector3.new(delta.X,0,delta.Z)
+        local distance = flat.Magnitude
+        if distance < 2 or distance > 200 then return nil, "DISTANCIA INVALIDA" end
+        local speed = v255.aimSpeed
+        local gravity = workspaceService.Gravity
+        if gravity <= 0 or speed < 20 then return nil, "FISICA INDISPONIVEL" end
+        local dy = delta.Y
+        local speed2 = speed*speed
+        local disc = speed2*speed2 - gravity*(gravity*distance*distance + 2*dy*speed2)
+        if disc < 0 then return nil, "SEM ARCO FISICO" end
+        local angles = {
+            math.atan((speed2-math.sqrt(disc))/(gravity*distance)),
+            math.atan((speed2+math.sqrt(disc))/(gravity*distance))
+        }
+        local directionXZ = flat.Unit
+        local launchLocal = info.cf:PointToObjectSpace(launch)
+        local targetLocal = info.cf:PointToObjectSpace(target)
+        for _, theta in ipairs(angles) do
+            local cosTheta = math.cos(theta)
+            -- Sem arcos verticais impossiveis para um spike normal.
+            if cosTheta > .04 and theta >= math.rad(-55) and theta <= math.rad(50) then
+                local flightTime = distance/(speed*cosTheta)
+                local safe = true
+                if v255.netGuard and info.netHeight then
+                    local denominator = targetLocal.Z-launchLocal.Z
+                    if math.abs(denominator) > .001 then
+                        local fraction = (info.netZ-launchLocal.Z)/denominator
+                        if fraction > 0 and fraction < 1 then
+                            local timeAtNet = flightTime*fraction
+                            local height = launch.Y + speed*math.sin(theta)*timeAtNet
+                                - 0.5*gravity*timeAtNet*timeAtNet
+                            if height < info.netHeight + v255.clearance then safe = false end
+                        end
+                    end
+                end
+                if safe then
+                    local velocity = directionXZ*(speed*cosTheta) + Vector3.new(0,speed*math.sin(theta),0)
+                    local land = launch + velocity*flightTime - Vector3.new(0,0.5*gravity*flightTime*flightTime,0)
+                    local localLand = info.cf:PointToObjectSpace(land)
+                    local inset = math.max(v255.margin-0.5,0)
+                    if math.abs(localLand.X) <= info.halfX-inset and
+                        math.abs(localLand.Z) <= info.halfZ-inset and
+                        (localLand.Z-info.netZ)*(targetLocal.Z-info.netZ) > 0 then
+                        return {origin=launch, target=target, direction=velocity.Unit,
+                            horizontal=directionXZ, velocity=velocity,
+                            duration=flightTime, gravity=gravity,
+                            angle=math.deg(theta), speed=speed, landing=land,
+                            netKnown=info.netHeight ~= nil}, nil
+                    end
+                end
+            end
+        end
+        return nil, "REDE/QUADRA: SEM TRAJETORIA SEGURA"
+    end
+
+    function v255.computePlan()
+        local info = courtInfo()
+        if not info then
+            v255.lastTarget = nil
+            return nil, "QUADRA NAO IDENTIFICADA"
+        end
+        local target = bestTarget(info)
+        if not target then
+            v255.lastTarget = nil
+            return nil, "SEM ALVO DENTRO DA QUADRA"
+        end
+        v255.lastTarget = target
+        local ball = ballPart()
+        if not ball then return nil, "BOLA NAO IDENTIFICADA" end
+        local result, reason = solveTrajectory(info, ball.Position, target)
+        if result then result.ball = ball end
+        return result, reason
+    end
+
+    function v255.facing()
+        local result = v255.computePlan()
+        return result and result.horizontal or nil
+    end
+
+    local function setStatus(message)
+        v255.lastStatus = tostring(message)
+    end
+
+    local function guideObjects()
+        if guideFolder and guideFolder.Parent then return end
+        guideFolder = Instance.new("Model")
+        guideFolder.Name = "DanXys_CornerPro_Guide"
+        guideFolder.Parent = workspaceService
+        targetDisk = Instance.new("Part")
+        targetDisk.Name = "CORNER_TARGET"
+        targetDisk.Shape = Enum.PartType.Cylinder
+        targetDisk.Anchored = true
+        targetDisk.CanCollide = false
+        targetDisk.CanTouch = false
+        targetDisk.CanQuery = false
+        targetDisk.Size = Vector3.new(0.15, 4.1, 4.1)
+        targetDisk.Material = Enum.Material.Neon
+        targetDisk.Color = Color3.fromRGB(0, 240, 255)
+        targetDisk.Transparency = 0.2
+        targetDisk.Parent = guideFolder
+        local sign = Instance.new("BillboardGui")
+        sign.Name = "CornerAimStatus"
+        sign.Size = UDim2.fromOffset(180, 36)
+        sign.StudsOffset = Vector3.new(0, 2.7, 0)
+        sign.AlwaysOnTop = true
+        sign.Adornee = targetDisk
+        sign.Parent = targetDisk
+        targetText = Instance.new("TextLabel")
+        targetText.Size = UDim2.fromScale(1,1)
+        targetText.BackgroundTransparency = 1
+        targetText.TextColor3 = Color3.fromRGB(0, 245, 255)
+        targetText.TextStrokeTransparency = 0.3
+        targetText.Font = Enum.Font.GothamBold
+        targetText.TextSize = 14
+        targetText.Text = "DANXYS AIM / SIMULADO"
+        targetText.Parent = sign
+        for i=1,12 do
+            local part = Instance.new("Part")
+            part.Name = "AIM_ARC_"..tostring(i)
+            part.Anchored = true
+            part.CanCollide = false
+            part.CanTouch = false
+            part.CanQuery = false
+            part.Material = Enum.Material.Neon
+            part.Color = Color3.fromRGB(21, 180, 255)
+            part.Transparency = 0.36
+            part.Size = Vector3.new(0.12,0.12,0.3)
+            part.Parent = guideFolder
+            pathParts[i] = part
+        end
+    end
+
+    local function updateVisual()
+        if not v255.enabled or not v255.showGuide then
+            if guideFolder then guideFolder:Destroy() end
+            guideFolder, targetDisk, targetText = nil,nil,nil
+            pathParts = {}
+            return
+        end
+        local plan, reason = v255.computePlan()
+        if not plan and not v255.lastTarget then
+            setStatus(reason or "ALVO INDISPONIVEL")
+            return
+        end
+        guideObjects()
+        local info = courtInfo()
+        if not info then return end
+        local target = plan and plan.target or v255.lastTarget
+        local orient = info.cf - info.cf.Position
+        targetDisk.CFrame = CFrame.new(target + Vector3.new(0,0.25,0)) * orient * CFrame.Angles(0,0,math.pi/2)
+        local okay = plan ~= nil
+        targetDisk.Color = okay and Color3.fromRGB(0,235,255) or Color3.fromRGB(255,154,60)
+        targetText.TextColor3 = targetDisk.Color
+        targetText.Text = okay and "DANXYS / ALVO SIMULADO" or "DANXYS / SEM ARCO"
+        for i, segment in ipairs(pathParts) do
+            segment.Transparency = okay and 0.42 or 1
+            if okay then
+                local t0 = plan.duration*((i-1)/#pathParts)
+                local t1 = plan.duration*(i/#pathParts)
+                local a = plan.origin + plan.velocity*t0 - Vector3.new(0,.5*plan.gravity*t0*t0,0)
+                local b = plan.origin + plan.velocity*t1 - Vector3.new(0,.5*plan.gravity*t1*t1,0)
+                local d = (b-a).Magnitude
+                if d > .01 then
+                    segment.Size = Vector3.new(.10,.10,d)
+                    segment.CFrame = CFrame.lookAt((a+b)*.5,b)
+                end
+            end
+        end
+        if okay then
+            setStatus(string.format("ALVO OK (SIMULADO) | %.1f graus | V %.0f%s",
+                plan.angle,plan.speed,plan.netKnown and "" or " | REDE NAO IDENTIFICADA"))
+        else
+            setStatus(reason or "SEM PLANO VALIDO")
+        end
+    end
+
+    visualConnection = trackedConnection(runService.Heartbeat:Connect(function()
+        local now = os.clock()
+        if now-lastVisual < 0.25 then return end
+        lastVisual = now
+        local success, err = pcall(updateVisual)
+        if not success then
+            setStatus("ERRO VISUAL: "..tostring(err):sub(1,70))
+        end
+        if v255.guiStatus then
+            local label = v255.lastStatus
+            if not v255.enabled then label = "AUTO CORNER: DESLIGADO" end
+            v255.guiStatus:SetText(label .. "  |  AIMED: " .. tostring(v255.aimedCount))
+        end
+    end))
+
+    function v255.installAim()
+        if v255.aimed then return true end
+        if not (getrawmetatable and setreadonly and getnamecallmethod) then
+            setStatus("HOOK INDISPONIVEL NO EXECUTOR")
+            return false
+        end
+        local remote = ballService and ballService:FindFirstChild("RF")
+        remote = remote and remote:FindFirstChild("Interact")
+        if not remote then
+            setStatus("BALLSERVICE.INTERACT NAO ENCONTRADO")
+            return false
+        end
+        local mt = getrawmetatable(game)
+        local previous = mt and mt.__namecall
+        if not previous then
+            setStatus("HOOK: METAMETODO AUSENTE")
+            return false
+        end
+        local ok, err = pcall(function()
+            setreadonly(mt, false)
+            mt.__namecall = function(self, ...)
+                local args = table.pack(...)
+                if v255.enabled and self == remote and getnamecallmethod() == "InvokeServer" then
+                    local request = args[1]
+                    if type(request) == "table" and (request.Move == "Spike" or request.Move == "ServeSpike") then
+                        local solved, plan, reason = pcall(v255.computePlan)
+                        if solved and plan then
+                            local unit = plan.direction
+                            request.LookVector = unit
+                            request.Direction = unit
+                            local tilt = request.TiltDirection
+                            if typeof(tilt) == "Vector3" then
+                                local tiltAmount = math.min(Vector3.new(tilt.X,0,tilt.Z).Magnitude, 1)
+                                request.TiltDirection = Vector3.new(plan.horizontal.X*tiltAmount,
+                                    tilt.Y, plan.horizontal.Z*tiltAmount)
+                            end
+                            v255.steer = plan.horizontal
+                            v255.lastPlan = plan
+                            v255.aimedCount = v255.aimedCount + 1
+                            setStatus("SPIKE REDIRECIONADO (SEM GARANTIA DO SERVIDOR)")
+                            if v255.calibrate and plan.ball then
+                                local launchedBall = plan.ball
+                                local originBefore = launchedBall.Position
+                                task.delay(0.17,function()
+                                    if not launchedBall or not launchedBall.Parent then return end
+                                    local displacement = (launchedBall.Position-originBefore).Magnitude
+                                    local velocity = launchedBall.AssemblyLinearVelocity
+                                    local magnitude = velocity.Magnitude
+                                    if displacement > 3 and magnitude >= 45 and magnitude <= 260 then
+                                        v255.aimSpeed = math.clamp(v255.aimSpeed*0.8+magnitude*0.2,60,240)
+                                    end
+                                end)
+                            end
+                        else
+                            setStatus(solved and (reason or "SEM ALVO SEGURO")
+                                or "ERRO CALCULO: "..tostring(plan):sub(1,60))
+                        end
+                    end
+                end
+                return previous(self, table.unpack(args,1,args.n))
+            end
+            setreadonly(mt, true)
+        end)
+        if not ok then
+            pcall(function() setreadonly(mt,true) end)
+            setStatus("FALHA AO INSTALAR AIM: "..tostring(err):sub(1,80))
+            return false
+        end
+        v255.aimed = true
+        supported = true
+        setStatus("HOOK ATIVO / AGUARDANDO SPIKE")
+        return true
+    end
+end
+
 
 local namecall5, v304
 
@@ -5512,7 +5976,7 @@ function v362.install()
         local v366 = v364[1]
         local steer2 = v362.steer
 
-        if type(v366) == "table" and typeof(steer2) == "Vector3" and os.clock() < v362.expiry then
+        if type(v366) == "table" and typeof(steer2) == "Vector3" and os.clock() < v362.expiry and not v255.enabled then
           if v366.Move == "Spike" or v366.Move == "ServeSpike" then
             v366.LookVector = steer2
             v366.Direction = steer2
@@ -7941,7 +8405,9 @@ do
           end
         end)
       else
-        Humanoid_8.AutoRotate = false
+        if not v255.enabled and not v201 then
+          Humanoid_8.AutoRotate = true
+        end
       end
     end)
   end
@@ -8326,7 +8792,7 @@ local DANXYS_UI = (function()
             BackgroundTransparency = 1, ScaleType = Enum.ScaleType.Fit}, header)
         local heading = txt(header, "DANXYS  //  OMNI", 17, {Font = Enum.Font.GothamBold,
             TextColor3 = K.cyan, Position = UDim2.fromOffset(212, 20), Size = UDim2.fromOffset(350, 25)})
-        txt(header, "NEON PERFORMANCE LAB  •  VOLLEYBALL", 10, {TextColor3 = K.dim,
+        txt(header, "CORNER PRO / AIM LAB  •  VOLLEYBALL", 10, {TextColor3 = K.dim,
             Position = UDim2.fromOffset(213, 46), Size = UDim2.fromOffset(440, 18)})
         local mini = click(header, "−", {AnchorPoint = Vector2.new(1, 0),
             Position = UDim2.new(1, -55, 0, 20), Size = UDim2.fromOffset(28, 28)})
@@ -9017,10 +9483,17 @@ v546.LeftGroupBox:AddToggle("autocorner", {
   Tooltip = "Aims to the corner sides of the enemy's goal",
   Default = false,
   Callback = function(value105)
-    v255.enabled = value105
-
     if value105 then
-      v255.installAim()
+      local ok = v255.installAim()
+      v255.enabled = ok == true
+      if not ok then
+        local toggle = toggles.autocorner
+        if toggle and toggle.SetValue then toggle:SetValue(false, true) end
+        warn("[DANXYS AIM] " .. tostring(v255.lastStatus))
+      end
+    else
+      v255.enabled = false
+      v255.lastStatus = "DESLIGADO"
     end
   end,
 })
@@ -9051,6 +9524,48 @@ v546.LeftGroupBox:AddLabel("Auto Corner bind"):AddKeyPicker("autocornerbind", {
     end
   end,
 })
+
+
+-- DANXYS CORNER PRO | alvo visual e parametros de calibracao.
+v546.CornerProGroup = v545.Main:AddLeftGroupbox("DanXys Corner Pro / Aim Simulation")
+v255.guiStatus = v546.CornerProGroup:AddLabel("AUTO CORNER: DESLIGADO")
+v546.CornerProGroup:AddToggle("cornerGuide", {
+  Text = "Mostrar alvo + arco previsto (visual)",
+  Default = true,
+  Callback = function(value) v255.showGuide = value end,
+})
+v546.CornerProGroup:AddToggle("cornerNetGuard", {
+  Text = "Net Guard (evitar trajetoria baixa)",
+  Default = true,
+  Callback = function(value) v255.netGuard = value end,
+})
+v546.CornerProGroup:AddSlider("cornerMargin", {
+  Text = "Margem da linha (studs)", Min = 3, Max = 13,
+  Default = 6, Rounding = 1,
+  Callback = function(value) v255.margin = value end,
+})
+v546.CornerProGroup:AddSlider("cornerSpeed", {
+  Text = "Velocidade simulada da bola (studs/s)", Min = 70, Max = 230,
+  Default = 145, Rounding = 0,
+  Callback = function(value) v255.aimSpeed = value end,
+})
+v546.CornerProGroup:AddSlider("cornerClearance", {
+  Text = "Folga sobre a rede (studs)", Min = 0.5, Max = 4,
+  Default = 1.5, Rounding = 1,
+  Callback = function(value) v255.clearance = value end,
+})
+v546.CornerProGroup:AddToggle("cornerCalibrate", {
+  Text = "Ajuste experimental da velocidade observada",
+  Default = false,
+  Callback = function(value) v255.calibrate = value end,
+})
+v546.CornerProGroup:AddButton("Reset velocidade (145)", function()
+  v255.aimSpeed = 145
+  local speedControl = options.cornerSpeed
+  if speedControl then speedControl:SetValue(145, true) end
+end)
+v546.CornerProGroup:AddLabel("O marcador e arco sao estimativas; nao controlam a bola apos o hit.")
+v546.CornerProGroup:AddLabel("Muito baixo pode ser bloqueio de contato do servidor.")
 
 v546.LeftGroupBox:AddToggle("newspike", {
   Text = "Silent Spike",
