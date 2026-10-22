@@ -1,6 +1,7 @@
 --[[
-  DANXYS ANTI TELA | FULL NEON - RAGE AIM v2.3
-  Correcao focada em evitar que Auto Corner invalide a requisicao de Spike.
+  DANXYS ANTI TELA | FULL NEON - SPIKE RESCUE v2.4
+  Spike Rescue: um unico ponto de edicao do request Interact/Spike.
+  Mantem o Spike original se a mira falhar; testes de fisica local sao opcionais.
   O servidor tem autoridade sobre colisao, potencia e fisica; valores locais nao garantem acerto.
   Validacao de key e chamada a sirius.menu/gen2 removidas.
   UI nativa DanXys, com logo rbxassetid://133068819773560.
@@ -31,6 +32,9 @@ local players, replicatedStorage, userInputService, tweenService, httpService, w
   effect, v235, v238, f50, v242, v243, v255, v308, v323, v329, v336, textButton2, textButton3,
   textButton4, v395, textButton5, bodyVelocity, f96, textButton6, v418, v440, v451, v495,
   LocopaniWindow, v545, v546
+
+-- Flag do hook-base existente. Nao empilhar hooks novos quando Auto Corner ligar.
+local DANXYS_BASE_HOOK_OK = false
 
 do
   players = game:GetService("Players")
@@ -3959,39 +3963,49 @@ do
 
   v205 = f61()
 
+  -- PONTO UNICO DE MIRA NO REQUEST NATIVO.
+  -- O wrapper base ja existia; nao adicionamos outro __namecall para Auto Corner.
   local function f62()
-    local GetRawMetatable = getrawmetatable(game)
-    local namecall = GetRawMetatable.__namecall
-    setreadonly(GetRawMetatable, false)
-
-    function GetRawMetatable.__namecall(p138, ...)
-      local GetNamecallMethod = getnamecallmethod()
-      local v250 = ...
-
-      if p138 == ballService.RF.Interact and GetNamecallMethod == "InvokeServer" then
-        if type(v250) == "table" and v250.Move == "Spike" then
-          if v222 and firesignal and localPlayer2 and localPlayer2.Character then
-            firesignal(effects.OnClientEvent, {
-              Character = localPlayer2.Character,
-              Sound = "PowerSpike",
-              Effect = "SpecialChargeSpikeVFX",
-            })
-          elseif v223 and firesignal and localPlayer2 and localPlayer2.Character then
-            firesignal(effects.OnClientEvent, {
-              Character = localPlayer2.Character,
-              Sound = "PowerSpike",
-              Effect = "HidariSpikeVFX",
-            })
+    local mt = getrawmetatable(game)
+    local previous = mt and mt.__namecall
+    if type(previous) ~= "function" then return end
+    local ok, err = pcall(function()
+      setreadonly(mt, false)
+      mt.__namecall = function(self, ...)
+        local method = getnamecallmethod()
+        if method == "InvokeServer" and self == ballService.RF.Interact then
+          local payload = ...
+          if type(payload) == "table" and
+              (payload.Move == "Spike" or payload.Move == "ServeSpike") then
+            -- Caso a edicao da mira falhe, ainda envia o comando original.
+            if v255 and type(v255.safeApply) == "function" then
+              local success, failure = pcall(v255.safeApply, payload)
+              if not success then
+                v255.lastError = tostring(failure)
+                v255.lastStatus = "AIM FALHOU; SPIKE ORIGINAL PRESERVADO"
+              end
+            end
+            if v222 and firesignal and localPlayer2 and localPlayer2.Character then
+              pcall(firesignal, effects.OnClientEvent, {
+                Character = localPlayer2.Character,
+                Sound = "PowerSpike", Effect = "SpecialChargeSpikeVFX"
+              })
+            elseif v223 and firesignal and localPlayer2 and localPlayer2.Character then
+              pcall(firesignal, effects.OnClientEvent, {
+                Character = localPlayer2.Character,
+                Sound = "PowerSpike", Effect = "HidariSpikeVFX"
+              })
+            end
           end
         end
-
-        return namecall(p138, v250)
+        -- Encaminha TODOS os argumentos, preservando assinatura e retorno.
+        return previous(self, ...)
       end
-
-      return namecall(p138, ...)
-    end
-
-    setreadonly(GetRawMetatable, true)
+      setreadonly(mt, true)
+    end)
+    pcall(function() setreadonly(mt, true) end)
+    if ok then DANXYS_BASE_HOOK_OK = true
+    else warn("[DANXYS SPIKE RESCUE] Hook-base indisponivel: " .. tostring(err)) end
   end
 
   v210 = f60()
@@ -4510,6 +4524,15 @@ do
     A.showHitZone = true
     A.aimedCount, A.seenCount, A.skippedCount = 0,0,0
     A.fastHitCount = 0
+    A.localBallImpulse = false -- TESTE LOCAL; NAO ALTERA FISICA DO SERVIDOR
+    A.impulseSpeed = 145
+    A.impulseLift = 5
+    A.impulseCount = 0
+    A.impulseError = "NAO TESTADO"
+    A.runSpeed = false
+    A.runSpeedValue = 28
+    A.walkSpeedOriginal = nil
+    A.lastSpeedHumanoid = nil
     A.lastStatus = "DESLIGADO"
     A.lastTarget, A.lastPlan, A.lastBall = nil,nil,nil
     A.lastComputed = 0
@@ -4539,6 +4562,9 @@ do
     local function cleanup()
         if heartbeatLink then pcall(function() heartbeatLink:Disconnect() end) end
         heartbeatLink=nil
+        if A.lastSpeedHumanoid and A.lastSpeedHumanoid.Parent and A.walkSpeedOriginal then
+            pcall(function() A.lastSpeedHumanoid.WalkSpeed=A.walkSpeedOriginal end)
+        end
         cleanVisual()
     end
     A.cleanupGuide = cleanup
@@ -4573,8 +4599,18 @@ do
         local map=workspaceService:FindFirstChild('Map')
         local court=map and map:FindFirstChild('Court')
         local base=nil
-        if court and court:IsA('BasePart') then base=court
-        elseif court and court:IsA('Model') then
+        -- Preferir as linhas de quadra da fisica do proprio jogo.
+        local okPhysics, physics = pcall(function()
+            return require(replicatedStorage.Common.Physics)
+        end)
+        if okPhysics and physics and type(physics._getCourtlines)=='function' then
+            local okBounds, bounds=pcall(physics._getCourtlines)
+            if okBounds and typeof(bounds)=='Instance' and bounds:IsA('BasePart') then
+                base=bounds
+            end
+        end
+        if not base and court and court:IsA('BasePart') then base=court
+        elseif not base and court and court:IsA('Model') then
             base=court.PrimaryPart or court:FindFirstChildWhichIsA('BasePart',true)
         end
         if not base or base.Size.X < 10 or base.Size.Z < 10 then return nil end
@@ -4641,7 +4677,10 @@ do
         local d=target-ball.Position
         local flat=Vector3.new(d.X,0,d.Z)
         local distance=flat.Magnitude
-        local speed=math.clamp(A.aimSpeed,60,260)
+        -- Usa velocidade observada da bola quando disponivel, senao configuracao visual.
+        local observedSpeed = ball.AssemblyLinearVelocity.Magnitude
+        local speed = math.clamp((observedSpeed>35 and observedSpeed<260)
+            and observedSpeed or A.aimSpeed, 60, 260)
         local g=workspaceService.Gravity
         if distance<2 or distance>250 or speed<20 or g<=0 then return nil end
         local s2=speed*speed
@@ -4792,6 +4831,9 @@ do
         if distance>A.hitRadius*1.45 then triggerArmed=true end
         if not triggerArmed or distance>A.hitRadius then return end
         if (ball.Position.Y-root.Position.Y)<A.hitHeight then return end
+        -- Evita autoacionar o Spike quando a bola esta muito longe ou subindo depressa.
+        if distance > math.min(A.hitRadius, 7) then return end
+        if ball.AssemblyLinearVelocity.Y > 22 then return end
         if now-lastFire < A.hitCooldown then return end
         if not (controller and handlerStates) then
             local ok,c,s=pcall(function()
@@ -4822,7 +4864,68 @@ do
             end
         end)
     end
+    -- TESTE DE FISICA LOCAL: AssemblyLinearVelocity so tem efeito persistente
+    -- quando a simulacao relevante aceita mudancas deste cliente.
+    -- Nao substitui o calculo/validacao autoritativa do servidor.
+    function A.tryLocalImpulse()
+        if not A.localBallImpulse then return end
+        local b=A.lastBall
+        if not b or not b.Parent or b.Anchored then
+            A.impulseError='BOLA INDISPONIVEL OU ANCORADA'
+            return
+        end
+        if typeof(A.lastDirection)~='Vector3' then
+            A.impulseError='DIRECAO AUSENTE'
+            return
+        end
+        local direction=A.lastDirection
+        local requested=direction*math.clamp(A.impulseSpeed,30,250)
+            + Vector3.new(0,math.clamp(A.impulseLift,-20,40),0)
+        local success, err=pcall(function() b.AssemblyLinearVelocity=requested end)
+        if success then
+            A.impulseCount=A.impulseCount+1
+            A.impulseError='IMPULSO ESCRITO NO CLIENTE; SERVIDOR PODE REVERTER'
+        else
+            A.impulseError=tostring(err):sub(1,72)
+        end
+    end
+    -- Ajuste local de velocidade do personagem, com restauracao.
+    function A.applyWalkSpeed()
+        local ch=localPlayer2.Character
+        local hum=ch and ch:FindFirstChildOfClass('Humanoid')
+        if not hum then return end
+        if A.runSpeed then
+            if hum~=A.lastSpeedHumanoid then
+                A.lastSpeedHumanoid=hum
+                A.walkSpeedOriginal=hum.WalkSpeed
+            end
+            local desired=math.clamp(A.runSpeedValue,16,48)
+            if math.abs(hum.WalkSpeed-desired)>.01 then
+                pcall(function() hum.WalkSpeed=desired end)
+            end
+        elseif A.lastSpeedHumanoid then
+            pcall(function()
+                if A.lastSpeedHumanoid.Parent and A.walkSpeedOriginal then
+                    A.lastSpeedHumanoid.WalkSpeed=A.walkSpeedOriginal
+                end
+            end)
+            A.lastSpeedHumanoid=nil
+            A.walkSpeedOriginal=nil
+        end
+    end
+    -- Apenas a informacao visual; nunca bloqueia um Spike por altura.
+    function A.getContactStatus()
+        local b=A.lastBall
+        local ch=localPlayer2.Character
+        local root=ch and ch:FindFirstChild('HumanoidRootPart')
+        if not b or not root then return 'BOLA/PLAYER INDISPONIVEL' end
+        local dist=(b.Position-root.Position).Magnitude
+        local delta=b.Position.Y-root.Position.Y
+        return string.format('DIST %.1f | ALT %+0.1f | VEL %.0f',
+            dist,delta,b.AssemblyLinearVelocity.Magnitude)
+    end
     heartbeatLink=track(runService.Heartbeat:Connect(function()
+        pcall(A.applyWalkSpeed)
         local now=os.clock()
         if now-lastVisual < .12 then return end
         lastVisual=now
@@ -4858,97 +4961,83 @@ do
         end
     end))
 
-    -- O hook NUNCA bloqueia o InvokeServer original. Nao altera payload se nao
-    -- houver uma direcao recente, nem modifica o eixo vertical do Spike.
-    function A.installAim()
-        if A.aimed then return true end
-        if not (getrawmetatable and setreadonly and getnamecallmethod) then
-            setStatus('EXECUTOR SEM HOOKMETAMETHOD/NAMECALL')
-            return false
+    -- O hook de Spike ja existe em f62(). NAO instalar outro hook aqui.
+    -- A remapeacao usa somente X/Z do vetor original e conserva Y, Charge,
+    -- Timestamp, BallId e demais campos do request nativo.
+    function A.safeApply(req)
+        if not A.enabled then return end
+        if type(req)~='table' then return end
+        if req.Move~='Spike' and req.Move~='ServeSpike' then return end
+        A.seenCount=A.seenCount+1
+        if not DANXYS_BASE_HOOK_OK then
+            A.lastStatus='HOOK BASE AUSENTE / SPIKE NORMAL'
+            return
         end
-        local service=ballService and ballService:FindFirstChild('RF')
-        local remote=service and service:FindFirstChild('Interact')
-        if not remote then setStatus('BALLSERVICE.RF.INTERACT INDISPONIVEL');return false end
-        local mt=getrawmetatable(game)
-        local previous=mt and mt.__namecall
-        if type(previous)~='function' then
-            setStatus('NAMECALL INDISPONIVEL')
-            return false
+        if os.clock()-A.lastComputed>.5 or typeof(A.lastDirection)~='Vector3' then
+            A.skippedCount=A.skippedCount+1
+            A.lastStatus='SEM ALVO VALIDO / SPIKE NORMAL'
+            return
         end
-        local ok,err=pcall(function()
-            setreadonly(mt,false)
-            mt.__namecall=function(self,...)
-                local args=table.pack(...)
-                if A.enabled and self==remote and getnamecallmethod()=='InvokeServer' then
-                    local req=args[1]
-                    if type(req)=='table' and (req.Move=='Spike' or req.Move=='ServeSpike') then
-                        A.seenCount=A.seenCount+1
-                        if A.seenCount<=3 then
-                            print('[DANXYS RAGE] SPIKE REQUEST OBSERVADO #'..A.seenCount)
-                        end
-                        local good,reason=pcall(function()
-                            -- Nunca fazemos calculos grandes nem waits na requisicao.
-                            if os.clock()-A.lastComputed>.40 or typeof(A.lastDirection)~='Vector3' then
-                                A.skippedCount=A.skippedCount+1
-                                setStatus('SPIKE NORMAL: DIRECAO NAO PRONTA')
-                                return
-                            end
-                            local original=typeof(req.LookVector)=='Vector3' and req.LookVector
-                                or (typeof(req.Direction)=='Vector3' and req.Direction or nil)
-                            if not original or original.Magnitude<.01 then
-                                A.skippedCount=A.skippedCount+1
-                                setStatus('SPIKE NORMAL: SEM VETOR ORIGINAL')
-                                return
-                            end
-                            local oldFlat=Vector3.new(original.X,0,original.Z)
-                            if oldFlat.Magnitude <.01 then
-                                A.skippedCount=A.skippedCount+1
-                                setStatus('SPIKE NORMAL: VETOR VERTICAL')
-                                return
-                            end
-                            local alpha=math.clamp(A.aimStrength/100,0,1)
-                            local mixed=oldFlat.Unit:Lerp(A.lastDirection,alpha)
-                            if mixed.Magnitude<.01 then return end
-                            local y=math.clamp(original.Unit.Y,-.95,.95)
-                            local h=math.sqrt(1-y*y)
-                            local adjusted=Vector3.new(mixed.Unit.X*h,y,mixed.Unit.Z*h)
-                            -- Apenas campos Vector3 preexistentes. Mantem o pitch de entrada.
-                            if typeof(req.LookVector)=='Vector3' then req.LookVector=adjusted end
-                            if typeof(req.Direction)=='Vector3' then req.Direction=adjusted end
-                            if A.syncTilt and typeof(req.TiltDirection)=='Vector3' then
-                                local td=req.TiltDirection
-                                local oldTilt=Vector3.new(td.X,0,td.Z)
-                                if oldTilt.Magnitude>.01 then
-                                    local tiltFlat=oldTilt.Unit:Lerp(A.lastDirection,alpha)
-                                    if tiltFlat.Magnitude>.01 then
-                                        req.TiltDirection=Vector3.new(tiltFlat.Unit.X*oldTilt.Magnitude,
-                                            td.Y,tiltFlat.Unit.Z*oldTilt.Magnitude)
-                                    end
-                                end
-                            end
-                            A.aimedCount=A.aimedCount+1
-                            setStatus('AIM HORIZONTAL APLICADO (PITCH ORIGINAL)')
-                        end)
-                        if not good then
-                            A.lastError=tostring(reason)
-                            setStatus('ERRO AIM - SPIKE PRESERVADO: '..tostring(reason):sub(1,55))
-                        end
-                    end
+        local original = typeof(req.LookVector)=='Vector3' and req.LookVector
+            or (typeof(req.Direction)=='Vector3' and req.Direction or nil)
+        if not original or original.Magnitude<.01 then
+            A.skippedCount=A.skippedCount+1
+            A.lastStatus='REQUEST SEM DIRECAO / SPIKE NORMAL'
+            return
+        end
+        local flat=Vector3.new(original.X,0,original.Z)
+        if flat.Magnitude<.01 then
+            A.skippedCount=A.skippedCount+1
+            A.lastStatus='VETOR VERTICAL / SPIKE NORMAL'
+            return
+        end
+        local alpha=math.clamp(A.aimStrength/100,0,1)
+        local mixed=flat.Unit:Lerp(A.lastDirection,alpha)
+        if mixed.Magnitude<.01 then return end
+        local y=math.clamp(original.Unit.Y,-.95,.95)
+        local h=math.sqrt(1-y*y)
+        local final=Vector3.new(mixed.Unit.X*h,y,mixed.Unit.Z*h)
+        if typeof(req.LookVector)=='Vector3' then req.LookVector=final end
+        if typeof(req.Direction)=='Vector3' then req.Direction=final end
+        if A.syncTilt and typeof(req.TiltDirection)=='Vector3' then
+            local tilt=req.TiltDirection
+            local tiltFlat=Vector3.new(tilt.X,0,tilt.Z)
+            if tiltFlat.Magnitude>.01 then
+                local steerTilt=tiltFlat.Unit:Lerp(A.lastDirection,alpha)
+                if steerTilt.Magnitude>.01 then
+                    req.TiltDirection=Vector3.new(
+                        steerTilt.Unit.X*tiltFlat.Magnitude,
+                        tilt.Y,
+                        steerTilt.Unit.Z*tiltFlat.Magnitude)
                 end
-                return previous(self,table.unpack(args,1,args.n))
             end
-            setreadonly(mt,true)
-        end)
-        if not ok then
-            pcall(function()setreadonly(mt,true)end)
-            setStatus('FALHA NO HOOK: '..tostring(err):sub(1,65))
-            return false
         end
-        A.aimed=true
-        print('[DANXYS RAGE] Hook instalado: sem alterar potencia/gravitacao')
-        setStatus('AIM PRONTO / ESPERANDO SPIKE')
-        return true
+        A.aimedCount=A.aimedCount+1
+        A.lastStatus='SPIKE ORIGINAL ENVIADO + CORRECAO X/Z'
+        if A.localBallImpulse then
+            task.defer(function() pcall(A.tryLocalImpulse) end)
+        end
     end
+    function A.installAim()
+        if DANXYS_BASE_HOOK_OK then
+            A.aimed=true
+            A.lastStatus='HOOK BASE PRONTO / SEM HOOK ADICIONAL'
+            return true
+        end
+        A.lastStatus='EXECUTOR NAO PERMITE INTERCEPTAR SPIKE; GUIA VISUAL OK'
+        return false
+    end
+    function A.emergencyReset()
+        A.enabled=false; A.fastHit=false; A.localBallImpulse=false
+        A.runSpeed=false
+        v182=false; v184=false; v186=false; v188=false
+        if v308 then pcall(function() v308.stop() end) end
+        pcall(A.applyWalkSpeed)
+        pcall(function() A.cleanupGuide() end)
+        A.lastStatus='SPIKE RESGATADO: TODOS MODIFICADORES DESLIGADOS' 
+        print('[DANXYS] RESCUE: mutadores desativados. Teste Spike nativo.')
+    end
+
 end
 
 local namecall5, v304
@@ -4975,7 +5064,7 @@ local function f70()
     if p145 == ballService.RF.Interact and GetNamecallMethod_5 == "InvokeServer" then
       local v307 = v306[1]
 
-      if type(v307) == "table" and v307.Move == "Spike" and v186 then
+      if type(v307) == "table" and v307.Move == "Spike" and v186 and not v255.enabled then
         v307.Charge = 1
         v307.SpecialCharge = 1
         v307.HoldDuration = 1
@@ -9488,12 +9577,8 @@ v546.LeftGroupBox:AddToggle("autocorner", {
   Default = false,
   Callback = function(value105)
     if value105 then
-      -- Modos antigos de spike nao devem editar o mesmo request do Auto Corner.
+      -- Legacy modifiers sao silenciados SEM recriar hooks nem fazer chamadas.
       v182=false;v184=false;v186=false
-      for _,toggleName in ipairs({"redirectspike","sanju","maxcharge"}) do
-        local t=toggles[toggleName]
-        if t and t.Value and t.SetValue then t:SetValue(false) end
-      end
       local ok = v255.installAim()
       v255.enabled = ok == true
       if not ok then
@@ -9537,7 +9622,7 @@ v546.LeftGroupBox:AddLabel("Auto Corner bind"):AddKeyPicker("autocornerbind", {
 
 
 -- DANXYS RAGE AIM UI | sliders afetam calculo e assistencia (fisica autoritativa e do servidor).
-v546.CornerProGroup = v545.Main:AddLeftGroupbox("DanXys RAGE AIM v2.3 / Safe Spike")
+v546.CornerProGroup = v545.Main:AddLeftGroupbox("DanXys SPIKE RESCUE v2.4")
 v255.guiStatus = v546.CornerProGroup:AddLabel("AUTO CORNER: DESLIGADO")
 v546.CornerProGroup:AddSlider("rageAimStrength", {
   Text="Forca da correcao HORIZONTAL (%)", Min=0,Max=100,Default=100,Rounding=0,
@@ -9560,7 +9645,7 @@ v546.CornerProGroup:AddSlider("cornerMargin", {
   Callback=function(value) v255.margin=value end,
 })
 v546.CornerProGroup:AddSlider("cornerSpeed", {
-  Text="Velocidade apenas da SIMULACAO",Min=70,Max=230,Default=145,Rounding=0,
+  Text="Fallback de velocidade do arco (visual)",Min=70,Max=230,Default=145,Rounding=0,
   Callback=function(value) v255.aimSpeed=value end,
 })
 v546.CornerProGroup:AddSlider("cornerClearance", {
@@ -9588,12 +9673,42 @@ v546.CornerProGroup:AddSlider("rageHitCooldown", {
   Text="Cooldown entre tentativas (segundos)",Min=.35,Max=1.5,Default=.55,Rounding=2,
   Callback=function(value) v255.hitCooldown=value end,
 })
+v546.CornerProGroup:AddDivider()
+v546.CornerProGroup:AddLabel("PHYSICS LAB / altera apenas o cliente; nao altera servidor")
+v546.CornerProGroup:AddToggle("rageRunSpeed", {
+  Text="Speed local do personagem [TEST]",Default=false,
+  Callback=function(value) v255.runSpeed=value end,
+})
+v546.CornerProGroup:AddSlider("rageRunSpeedValue", {
+  Text="WalkSpeed local",Min=16,Max=48,Default=28,Rounding=0,
+  Callback=function(value) v255.runSpeedValue=value end,
+})
+v546.CornerProGroup:AddToggle("rageLocalBallImpulse", {
+  Text="Impulso na bola LOCAL [TEST - pode dessincronizar]",Default=false,
+  Callback=function(value) v255.localBallImpulse=value end,
+})
+v546.CornerProGroup:AddSlider("rageImpulseSpeed", {
+  Text="Velocidade local na bola",Min=30,Max=250,Default=145,Rounding=0,
+  Callback=function(value) v255.impulseSpeed=value end,
+})
+v546.CornerProGroup:AddSlider("rageImpulseLift", {
+  Text="Elevacao local na bola",Min=-20,Max=40,Default=5,Rounding=0,
+  Callback=function(value) v255.impulseLift=value end,
+})
+v546.CornerProGroup:AddButton("RESGATAR SPIKE NATIVO / PARAR MODIFICADORES",function()
+    v255.emergencyReset()
+    v174:Notify("SPIKE NATIVO: modificadores desativados. Se necessario, reentre no servidor.")
+end)
+v546.CornerProGroup:AddButton("Diagnostico de contato",function()
+    v174:Notify(v255.getContactStatus().." / "..v255.lastStatus)
+    print('[DANXYS CONTACT]',v255.getContactStatus(),'IMPULSO:',v255.impulseError)
+end)
 v546.CornerProGroup:AddButton("Reiniciar diagnostico RAGE",function()
   v255.aimedCount=0;v255.seenCount=0;v255.skippedCount=0;v255.fastHitCount=0
   v255.lastStatus='DIAGNOSTICO REINICIADO'
 end)
-v546.CornerProGroup:AddLabel("Spike natural sempre repassado; mira preserva angulo vertical.")
-v546.CornerProGroup:AddLabel("FAST HIT usa acao normal; nao aumenta alcance real no servidor.")
+v546.CornerProGroup:AddLabel("Spike nativo preservado no hook-base; sem empilhar outros hooks.")
+v546.CornerProGroup:AddLabel("Speed e impulso na bola sao locais e podem ser sobrescritos pelo servidor.")
 v546.CornerProGroup:AddLabel("Muito baixo depende da janela de contato / servidor, nao so da mira.")
 
 v546.LeftGroupBox:AddToggle("newspike", {
@@ -11715,10 +11830,10 @@ end
 
 do
   v174:SetConfigFolder("LOCOPANI")
-  pcall(function() v174:LoadAutoloadConfig() end)
+  -- Spike Rescue: nao ativa configuracoes legadas automaticamente. Carregue manualmente se quiser.
 
   -- Menu DanXys: RightShift para exibir/ocultar; botao '-' para minimizar.
-  v174:Notify("DANXYS FULL LOADED / ORIGINAL FEATURES + NEON UI")
+  v174:Notify("DANXYS SPIKE RESCUE v2.4 / NEON UI")
   pcall(function() LOCOPANI_RAY_WINDOW:Notify({ title = "DANXYS", content = "Full menu loaded" }) end)
 end
 
