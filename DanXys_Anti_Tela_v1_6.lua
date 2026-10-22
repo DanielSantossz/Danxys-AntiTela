@@ -1,5 +1,5 @@
 --[[
-    DanXys Anti Tela v1.6 | Dark Neon UI + Server Monitor
+    DanXys Anti Tela v1.7 | Electric Particles + Neon UI + Server Monitor
     Interface Luau client-side. Usa apenas Players e propriedades publicas.
     Nao identifica espectadores invisiveis nem ferramentas administrativas.
     Pop-ups compactos, com barra de 1.5 segundo.
@@ -113,12 +113,25 @@ local function button(parent, content, x, y, w, h, accent)
     return b
 end
 local function card(parent, x, y, w, h, heading, headingColor, strokeColor)
+    -- Aura externa, por baixo do cartão. Cria profundidade sem shaders.
+    local aura = el("Frame", {
+        Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
+        BackgroundTransparency = 1, BorderSizePixel = 0,
+    }, parent)
+    rounded(aura, 11)
+    local auraEdge = outline(aura, strokeColor or C.blue, 5.5, 0.85)
+    local auraTween = TweenService:Create(auraEdge,
+        TweenInfo.new(2.7, Enum.EasingStyle.Sine,
+            Enum.EasingDirection.InOut, -1, true),
+        {Transparency = 0.68, Thickness = 7})
+    auraTween:Play()
+    table.insert(titleTweens, auraTween)
     local f = el("Frame", {
         Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
         BackgroundColor3 = Color3.fromRGB(255, 255, 255), BorderSizePixel = 0
     }, parent)
     rounded(f, 11)
-    outline(f, strokeColor or C.blue, 1.7, 0.05)
+    outline(f, strokeColor or C.blue, 2.05, 0)
     el("UIGradient", {
         Rotation = 90,
         Color = ColorSequence.new({
@@ -167,15 +180,35 @@ local panel = el("Frame", {
     Active = true
 }, gui)
 rounded(panel, 15)
-local border = outline(panel, C.cyan, 2.5, 0)
-el("UIGradient", {
+local border = outline(panel, C.cyan, 2.7, 0)
+local borderGradient = el("UIGradient", {
     Rotation = 35,
     Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, C.deepBlue),
-        ColorSequenceKeypoint.new(0.5, C.cyan),
-        ColorSequenceKeypoint.new(1, C.deepBlue)
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 22, 95)),
+        ColorSequenceKeypoint.new(0.28, C.cyan),
+        ColorSequenceKeypoint.new(0.63, Color3.fromRGB(0, 90, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 22, 95))
     })
 }, border)
+-- Agora existe movimento real nas bordas: a v1.6 tinha degradê ESTÁTICO.
+local borderMotion = TweenService:Create(borderGradient,
+    TweenInfo.new(6, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1),
+    {Rotation = 395})
+borderMotion:Play()
+table.insert(titleTweens, borderMotion)
+local borderPulse = TweenService:Create(border,
+    TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+    {Thickness = 3.4, Transparency = 0.15})
+borderPulse:Play()
+table.insert(titleTweens, borderPulse)
+local outerGlowStroke = underGlow:FindFirstChildOfClass("UIStroke")
+if outerGlowStroke then
+    local outerPulse = TweenService:Create(outerGlowStroke,
+        TweenInfo.new(2.3, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        {Thickness = 12, Transparency = 0.65})
+    outerPulse:Play()
+    table.insert(titleTweens, outerPulse)
+end
 el("UIGradient", {
     Rotation = 90,
     Color = ColorSequence.new({
@@ -208,6 +241,121 @@ if workspace.CurrentCamera then
     listen(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), fitScreen)
 end
 
+-- ======================================================================
+-- V1.7 | EFEITOS REAIS (NAO SAO APENAS PARTE DA ARTE DO LOGOTIPO)
+-- Luzes em movimento, faiscas, arco eletrico e sweep de brilho do cabecalho.
+-- Os elementos sao leves, limitados ao topo e desligam com o menu.
+-- ======================================================================
+local rng = Random.new()
+local fxLayer = el("Frame", {
+    Name = "ElectricEffects", Position = UDim2.fromOffset(0, 0),
+    Size = UDim2.fromOffset(PANEL_W, 106),
+    BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 6
+}, panel)
+
+local function sparkParticle()
+    if not alive or not fxLayer.Parent then return end
+    local x = rng:NextInteger(9, PANEL_W - 13)
+    local y = rng:NextInteger(12, 102)
+    local diameter = rng:NextInteger(2, 5)
+    local shade = rng:NextInteger(1, 5) == 1 and C.white or C.cyan
+    local glow = el("Frame", {
+        Name = "Spark", Size = UDim2.fromOffset(diameter + 4, diameter + 4),
+        Position = UDim2.fromOffset(x, y),
+        BackgroundColor3 = shade, BackgroundTransparency = 0.58,
+        BorderSizePixel = 0, ZIndex = 8
+    }, fxLayer)
+    rounded(glow, 50)
+    local luminousCenter = el("Frame", {
+        Size = UDim2.fromOffset(diameter, diameter),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        BackgroundColor3 = C.white, BackgroundTransparency = 0.05,
+        BorderSizePixel = 0
+    }, glow)
+    rounded(luminousCenter, 50)
+    local duration = rng:NextNumber(0.85, 1.55)
+    local fly = TweenService:Create(glow,
+        TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+            Position = UDim2.fromOffset(x + rng:NextInteger(-18, 22), y - rng:NextInteger(22, 55)),
+            BackgroundTransparency = 1,
+            Size = UDim2.fromOffset(1, 1)
+        })
+    local fade = TweenService:Create(luminousCenter,
+        TweenInfo.new(duration, Enum.EasingStyle.Linear), {
+            BackgroundTransparency = 1
+        })
+    fly:Play()
+    fade:Play()
+    task.delay(duration + 0.05, function()
+        if glow.Parent then glow:Destroy() end
+    end)
+end
+
+-- Mantem cerca de 10 a 15 faíscas na interface, sem usar RenderStepped.
+task.spawn(function()
+    while alive and fxLayer.Parent do
+        sparkParticle()
+        task.wait(0.11)
+    end
+end)
+
+local function boltSegment(parent, x1, y1, x2, y2, thickness, shade)
+    local dx, dy = x2 - x1, y2 - y1
+    local length = math.sqrt(dx * dx + dy * dy)
+    local seg = el("Frame", {
+        Name = "ElectricArc", AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.fromOffset(x1, y1),
+        Size = UDim2.fromOffset(length, thickness),
+        Rotation = math.deg(math.atan2(dy, dx)),
+        BackgroundColor3 = shade, BorderSizePixel = 0,
+        BackgroundTransparency = 0.04
+    }, parent)
+    return seg
+end
+
+local function flashLightning()
+    if not alive or not fxLayer.Parent then return end
+    local branch = el("Frame", {
+        Name = "Lightning", BackgroundTransparency = 1,
+        Size = UDim2.fromOffset(PANEL_W, 107), ZIndex = 8
+    }, fxLayer)
+    local x = rng:NextInteger(1, 2) == 1 and rng:NextInteger(20, 85)
+        or rng:NextInteger(555, 710)
+    local y = rng:NextInteger(3, 22)
+    for _ = 1, 5 do
+        local nextX = math.clamp(x + rng:NextInteger(-18, 25), 4, PANEL_W - 4)
+        local nextY = y + rng:NextInteger(9, 16)
+        boltSegment(branch, x, y, nextX, nextY, 4, C.blue)
+        boltSegment(branch, x, y, nextX, nextY, 1.8, C.white)
+        x, y = nextX, nextY
+    end
+    task.delay(0.13, function()
+        if branch.Parent then branch:Destroy() end
+    end)
+end
+
+task.spawn(function()
+    while alive and fxLayer.Parent do
+        task.wait(rng:NextNumber(1.2, 2.6))
+        flashLightning()
+    end
+end)
+
+-- Reflexo azul atravessando o separador horizontal.
+local movingShine = el("Frame", {
+    Name = "ShineStrip", Position = UDim2.fromOffset(-95, 104),
+    Size = UDim2.fromOffset(92, 2), BorderSizePixel = 0,
+    BackgroundColor3 = C.cyan, BackgroundTransparency = 0.15,
+    ZIndex = 2
+}, fxLayer)
+local shiny = TweenService:Create(movingShine,
+    TweenInfo.new(2.4, Enum.EasingStyle.Quad,
+        Enum.EasingDirection.InOut, -1),
+    {Position = UDim2.fromOffset(PANEL_W + 20, 104)})
+shiny:Play()
+table.insert(titleTweens, shiny)
+
 -- CABECALHO: logo opcional da arte aprovada ou tipografia nativa estilizada.
 local titleArea = el("Frame", {
     Position = UDim2.fromOffset(23, 7), Size = UDim2.fromOffset(455, 90),
@@ -226,6 +374,27 @@ if hasLogoImage then
         {Position = UDim2.fromOffset(0, -5)})
     logoTween:Play()
     table.insert(titleTweens, logoTween)
+    -- Brilho diagonal que passa sobre a imagem importada.
+    local shimmer = el("Frame", {
+        Name = "TitleShimmer", Position = UDim2.fromOffset(-75, 8),
+        Size = UDim2.fromOffset(35, 76),
+        BackgroundColor3 = Color3.fromRGB(165, 234, 255),
+        BackgroundTransparency = 0.84, BorderSizePixel = 0,
+        Rotation = 17, ZIndex = 5
+    }, titleArea)
+    local shimmerFade = el("UIGradient", {
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(0.5, 0.22),
+            NumberSequenceKeypoint.new(1, 1)
+        })
+    }, shimmer)
+    local shimmerTween = TweenService:Create(shimmer,
+        TweenInfo.new(3.1, Enum.EasingStyle.Sine,
+            Enum.EasingDirection.InOut, -1),
+        {Position = UDim2.fromOffset(510, 8)})
+    shimmerTween:Play()
+    table.insert(titleTweens, shimmerTween)
 else
     -- O desenho nativo aproxima o estilo, mas a arte fornecida fica mais fiel.
     local cursor = 0
@@ -275,7 +444,7 @@ else
         Color = ColorSequence.new(C.white, C.cyan)
     }, subtitle)
 end
-local version = text(panel, "v1.6  /  SERVER MONITOR", UDim2.fromOffset(490, 47),
+local version = text(panel, "v1.7  /  SERVER MONITOR", UDim2.fromOffset(490, 47),
     UDim2.fromOffset(193, 25), 13, C.cyan, true)
 version.Font = Enum.Font.GothamBlack
 local minimize = button(panel, "—", 669, 15, 30, 29, C.blue)
@@ -336,6 +505,21 @@ for radius = 66, 26, -20 do
     rounded(circle, 100)
     outline(circle, C.blue, 1, 0.3)
 end
+-- Ponteiro de radar girando de verdade.
+local radarPivot = el("Frame", {
+    Position = UDim2.fromOffset(0, 0),
+    Size = UDim2.fromOffset(81, 81), BackgroundTransparency = 1
+}, radar)
+local radarArm = el("Frame", {
+    Position = UDim2.fromOffset(40, 39), Size = UDim2.fromOffset(32, 2),
+    BackgroundColor3 = C.cyan, BackgroundTransparency = 0.15,
+    BorderSizePixel = 0
+}, radarPivot)
+local radarSpin = TweenService:Create(radarPivot,
+    TweenInfo.new(3.8, Enum.EasingStyle.Linear,
+        Enum.EasingDirection.InOut, -1), {Rotation = 360})
+radarSpin:Play()
+table.insert(titleTweens, radarSpin)
 text(radar, "✦", UDim2.fromOffset(24, 21),
     UDim2.fromOffset(32, 31), 24, C.cyan, true)
 
@@ -813,6 +997,6 @@ end)
 setMode("PUBLIC")
 showTab("DASHBOARD")
 refreshStatus()
-notify("DANXYS ANTI TELA", "Server Monitor v1.6 ativo", C.cyan)
-print("[DanXys Anti Tela v1.6] Sensor active | Server:", serverType())
+notify("DANXYS ANTI TELA", "Server Monitor v1.7 ativo", C.cyan)
+print("[DanXys Anti Tela v1.7] Sensor active | Server:", serverType())
 print("[DanXys] Spectate: UNKNOWN (not observable via Players)")
