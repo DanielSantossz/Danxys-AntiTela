@@ -1,8 +1,8 @@
 --[[
-    DanXys Anti Tela v1.8 | Full-Panel Particles + Circular Radar + Neon UI
+    DanXys Anti Tela v2.0 | Aim Lab + Full-Panel Particles + Circular Radar + Neon UI
     Interface Luau client-side. Usa apenas Players e propriedades publicas.
     Nao identifica espectadores invisiveis nem ferramentas administrativas.
-    Pop-ups compactos, com barra de 1.5 segundo.
+    Pop-ups 1.5s + hitbox visual + canto e recepcao estimados (guias locais).
 ]]
 
 local Players = game:GetService("Players")
@@ -481,7 +481,7 @@ else
         Color = ColorSequence.new(C.white, C.cyan)
     }, subtitle)
 end
-local version = text(panel, "v1.8  /  SERVER MONITOR", UDim2.fromOffset(490, 47),
+local version = text(panel, "v2.0  /  AIM LAB", UDim2.fromOffset(490, 47),
     UDim2.fromOffset(193, 25), 13, C.cyan, true)
 version.Font = Enum.Font.GothamBlack
 local minimize = button(panel, "—", 669, 15, 30, 29, C.blue)
@@ -495,9 +495,9 @@ rounded(line, 2)
 el("UIGradient", {Color = ColorSequence.new(C.cyan, C.deepBlue)}, line)
 
 local pages, tabs = {}, {}
-local tabNames = {"DASHBOARD", "PLAYERS", "SETTINGS", "HISTORY"}
+local tabNames = {"DASHBOARD", "PLAYERS", "AIM", "SETTINGS", "HISTORY"}
 for i, name in ipairs(tabNames) do
-    tabs[name] = button(panel, name, 16 + (i-1)*181, 117, 174, 41, C.deepBlue)
+    tabs[name] = button(panel, name, 16 + (i-1)*146, 117, 138, 41, C.deepBlue)
     pages[name] = el("Frame", {
         Position = UDim2.fromOffset(0, 166),
         Size = UDim2.fromOffset(PANEL_W, 557),
@@ -526,7 +526,7 @@ local sensorLabel = text(serverCard, "SENSOR: ACTIVE", UDim2.fromOffset(15, 45),
     UDim2.fromOffset(275, 24), 16, C.green, true)
 local serverLabel = text(serverCard, "SERVER TYPE: ...", UDim2.fromOffset(15, 77),
     UDim2.fromOffset(310, 22), 15, C.white, true)
-text(serverCard, "SPECTATE: UNKNOWN", UDim2.fromOffset(15, 105),
+local spectateLabel = text(serverCard, "SPECTATE: UNKNOWN", UDim2.fromOffset(15, 105),
     UDim2.fromOffset(310, 22), 15, C.yellow, true)
 -- Decoracao estilo radar no cartao de status
 local radar = el("Frame", {
@@ -868,6 +868,14 @@ local function refreshStatus()
     settingsBaselineLabel.Text = "BASELINE: " .. baselineSize .. " PLAYERS"
     lastJoin.Text = "LAST JOIN: " .. lastJoinName
     lastLeave.Text = "LAST LEAVE: " .. lastLeaveName
+    -- Risco indireto: conta adicional e visivel, NAO prova observacao.
+    if expected and total > expected then
+        spectateLabel.Text = "SPECTATE: CONTA EXTRA (NAO PROVA)"
+        spectateLabel.TextColor3 = C.red
+    else
+        spectateLabel.Text = "SPECTATE: UNKNOWN"
+        spectateLabel.TextColor3 = C.yellow
+    end
 
     if selectedMode == "PUBLIC" then
         sensorLabel.Text = "SENSOR: ACTIVE"
@@ -1069,20 +1077,37 @@ listen(notificationBtn.MouseButton1Click, flipNotifications)
 listen(settingsNotify.MouseButton1Click, flipNotifications)
 
 local minimized = false
+local NORMAL_TITLE_POS = UDim2.fromOffset(23, 7)
+local NORMAL_TITLE_SIZE = UDim2.fromOffset(455, 90)
+local NORMAL_LOGO_SIZE = UDim2.fromOffset(440, 105)
+local NORMAL_MIN_POS = UDim2.fromOffset(669, 15)
+local NORMAL_CLOSE_POS = UDim2.fromOffset(708, 15)
 listen(minimize.MouseButton1Click, function()
     minimized = not minimized
     minimizedFX = minimized
-    panel.Size = minimized and UDim2.fromOffset(PANEL_W, 113)
+    panel.ClipsDescendants = minimized
+    panel.Size = minimized and UDim2.fromOffset(120, 32)
         or UDim2.fromOffset(PANEL_W, PANEL_H)
     underGlow.Visible = not minimized
     minimize.Text = minimized and "+" or "—"
+    titleArea.Position = minimized and UDim2.fromOffset(2, 1) or NORMAL_TITLE_POS
+    titleArea.Size = minimized and UDim2.fromOffset(78, 30) or NORMAL_TITLE_SIZE
+    titleArea.ClipsDescendants = minimized
+    if logoImage then
+        logoImage.Size = minimized and UDim2.fromOffset(76, 30) or NORMAL_LOGO_SIZE
+    end
+    minimize.Position = minimized and UDim2.fromOffset(81, 5) or NORMAL_MIN_POS
+    close.Position = minimized and UDim2.fromOffset(102, 5) or NORMAL_CLOSE_POS
+    minimize.Size = minimized and UDim2.fromOffset(17, 22) or UDim2.fromOffset(30, 29)
+    close.Size = minimized and UDim2.fromOffset(16, 22) or UDim2.fromOffset(30, 29)
+    minimize.TextSize = minimized and 12 or 13
+    close.TextSize = minimized and 12 or 13
     for _, object in ipairs(panel:GetChildren()) do
         if object:IsA("GuiObject") and object ~= titleArea and object ~= minimize
-            and object ~= close and object ~= line and object ~= version then
+            and object ~= close then
             object.Visible = not minimized
         end
     end
-    -- Ao expandir, preservar apenas a aba que estava selecionada.
     if not minimized then showTab(currentTab) end
 end)
 
@@ -1114,11 +1139,780 @@ listen(UserInputService.InputChanged, function(input)
     end
 end)
 
+
+-- ================================================================
+-- v1.9: AUXILIOS VISUAIS LOCAIS - nao mudam hitboxes do servidor,
+-- forca do saque, recepcao ou direcao real das jogadas.
+-- ================================================================
+local visualFolder = Instance.new("Folder")
+visualFolder.Name = "DanXys_VisualAssist"
+local oldVisual = workspace:FindFirstChild(visualFolder.Name)
+if oldVisual then oldVisual:Destroy() end
+visualFolder.Parent = workspace
+
+local assist = {
+    boxes = false,
+    corners = false,
+    landing = false
+}
+local hitboxAdornments = {}
+local courtMarks = {}
+local landingMarker
+local ballPart
+local lastBallSearch = -math.huge
+local lastCourtSearch = -math.huge
+local courtCF, courtSZ, groundY
+
+local hitboxBtn = button(controlsCard, "HITBOX VISUAL: OFF", 17, 200, 205, 34, C.deepBlue)
+local cornerBtn = button(controlsCard, "CORNERS: OFF", 234, 200, 196, 34, C.deepBlue)
+local landingBtn = button(controlsCard, "RECEPTION: OFF", 442, 200, 205, 34, C.deepBlue)
+local assistInfo = text(controlsCard,
+    "Guias visuais. Sem alterar colisao, golpes ou recepcao do servidor.",
+    UDim2.fromOffset(18, 245), UDim2.fromOffset(665, 32), 12, C.muted)
+
+local function paintButton(b, enabled, label)
+    b.Text = label .. (enabled and ": ON" or ": OFF")
+    b.BackgroundColor3 = enabled and C.deepBlue or C.button
+    b.TextColor3 = enabled and C.green or C.white
+end
+
+local function findCourt()
+    local map = workspace:FindFirstChild("Map")
+    local obj = map and map:FindFirstChild("Court", true)
+    if not obj then return nil end
+    if obj:IsA("BasePart") then
+        return obj.CFrame, obj.Size
+    elseif obj:IsA("Model") then
+        return obj:GetBoundingBox()
+    end
+    return nil
+end
+
+local function clearCornerGuides()
+    for _, part in ipairs(courtMarks) do
+        if part.Parent then part:Destroy() end
+    end
+    table.clear(courtMarks)
+end
+
+local function makeCornerGuides()
+    clearCornerGuides()
+    courtCF, courtSZ = findCourt()
+    if not courtCF then
+        assistInfo.Text = "Quadra nao encontrada (Workspace.Map.Court)."
+        return false
+    end
+    groundY = courtCF.Position.Y + courtSZ.Y/2
+    for ix, xsign in ipairs({-1, 1}) do
+        for iz, zsign in ipairs({-1, 1}) do
+            local marker = Instance.new("Part")
+            marker.Name = "DanXysCornerMarker"
+            marker.Shape = Enum.PartType.Ball
+            marker.Material = Enum.Material.Neon
+            marker.Color = C.cyan
+            marker.Transparency = 0.43
+            marker.Size = Vector3.new(2, 0.35, 2)
+            marker.Anchored = true
+            marker.CanCollide = false
+            marker.CanTouch = false
+            marker.CanQuery = false
+            marker.CFrame = courtCF * CFrame.new(
+                xsign * math.max(0, courtSZ.X/2-2.5),
+                courtSZ.Y/2 + 0.35,
+                zsign * math.max(0, courtSZ.Z/2-2.5))
+            marker.Parent = visualFolder
+            table.insert(courtMarks, marker)
+        end
+    end
+    assistInfo.Text = "4 cantos do Workspace.Map.Court destacados (aproximacao)."
+    return true
+end
+
+local function clearHitboxes()
+    for _, ador in pairs(hitboxAdornments) do
+        if ador.Parent then ador:Destroy() end
+    end
+    table.clear(hitboxAdornments)
+end
+
+local function updateHitboxes()
+    if not assist.boxes then return end
+    local seen = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= Players.LocalPlayer then
+            local character = player.Character
+            local root = character and character:FindFirstChild("HumanoidRootPart")
+            if root then
+                seen[player.UserId] = true
+                local adorn = hitboxAdornments[player.UserId]
+                if not adorn or not adorn.Parent then
+                    adorn = Instance.new("BoxHandleAdornment")
+                    adorn.Name = "DanXysHitboxVisual"
+                    adorn.Adornee = root
+                    adorn.AlwaysOnTop = true
+                    adorn.ZIndex = 3
+                    adorn.Transparency = 0.77
+                    adorn.Color3 = C.cyan
+                    adorn.Parent = visualFolder
+                    hitboxAdornments[player.UserId] = adorn
+                end
+                adorn.Adornee = root
+                adorn.Size = Vector3.new(math.max(root.Size.X, 4),
+                    math.max(root.Size.Y, 5), math.max(root.Size.Z, 4))
+            end
+        end
+    end
+    for id, adorn in pairs(hitboxAdornments) do
+        if not seen[id] then
+            adorn:Destroy()
+            hitboxAdornments[id] = nil
+        end
+    end
+end
+
+local function isWorldBall(p)
+    if not p or not p:IsA("BasePart") or not p:IsDescendantOf(workspace) then return false end
+    if p.Anchored then return false end
+    local model = p:FindFirstAncestorOfClass("Model")
+    if model and model:FindFirstChildOfClass("Humanoid") then return false end
+    return true
+end
+
+local function findBall()
+    for _, model in ipairs(workspace:GetChildren()) do
+        if model:IsA("Model") and model.Name:match("^CLIENT_BALL_%d+$") then
+            local first = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)
+            if first then return first end
+        end
+    end
+    for _, name in ipairs({"Ball", "Volleyball", "VolleyBall", "GameBall"}) do
+        local obj = workspace:FindFirstChild(name, true)
+        if obj and isWorldBall(obj) then return obj end
+        if obj and obj:IsA("Model") then
+            local part = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true)
+            if isWorldBall(part) then return part end
+        end
+    end
+    return nil
+end
+
+local function setLandingVisible(on)
+    if not landingMarker then
+        landingMarker = Instance.new("Part")
+        landingMarker.Name = "DanXysReceptionForecast"
+        landingMarker.Shape = Enum.PartType.Ball
+        landingMarker.Anchored = true
+        landingMarker.CanCollide = false
+        landingMarker.CanTouch = false
+        landingMarker.CanQuery = false
+        landingMarker.Material = Enum.Material.Neon
+        landingMarker.Size = Vector3.new(2.8, 0.28, 2.8)
+        landingMarker.Color = C.yellow
+        landingMarker.Transparency = 0.33
+        landingMarker.Parent = visualFolder
+    end
+    landingMarker.Transparency = on and 0.33 or 1
+end
+
+local function updateLanding()
+    if not assist.landing then return end
+    if not ballPart or not isWorldBall(ballPart) then
+        ballPart = nil
+        if os.clock() - lastBallSearch >= 2 then
+            lastBallSearch = os.clock()
+            ballPart = findBall()
+        end
+    end
+    if not ballPart then
+        if landingMarker then setLandingVisible(false) end
+        assistInfo.Text = "Bola nao identificada. Guia de recepcao indisponivel."
+        return
+    end
+    if not courtCF and os.clock() - lastCourtSearch >= 3 then
+        lastCourtSearch = os.clock()
+        courtCF, courtSZ = findCourt()
+    end
+    if not courtCF then
+        if landingMarker then setLandingVisible(false) end
+        assistInfo.Text = "Quadra nao encontrada para calcular queda."
+        return
+    end
+    groundY = courtCF.Position.Y + courtSZ.Y/2 + 0.3
+    local p, v = ballPart.Position, ballPart.AssemblyLinearVelocity
+    local h = p.Y-groundY
+    local g = workspace.Gravity
+    local disc = v.Y*v.Y + 2*g*h
+    if h <= 0 or disc < 0 or g <= 0 then
+        if landingMarker then setLandingVisible(false) end
+        return
+    end
+    local t = (v.Y + math.sqrt(disc))/g
+    if t <= 0 or t > 3.5 or v.Magnitude < 3 then
+        if landingMarker then setLandingVisible(false) end
+        return
+    end
+    -- Estimativa balistica: sem prever colisao com rede, spin ou scripts do jogo.
+    local predicted = p + Vector3.new(v.X*t, 0, v.Z*t)
+    setLandingVisible(true)
+    landingMarker.Position = Vector3.new(predicted.X, groundY + 0.16, predicted.Z)
+end
+
+listen(hitboxBtn.MouseButton1Click, function()
+    assist.boxes = not assist.boxes
+    paintButton(hitboxBtn, assist.boxes, "HITBOX VISUAL")
+    if not assist.boxes then clearHitboxes() else updateHitboxes() end
+end)
+listen(cornerBtn.MouseButton1Click, function()
+    assist.corners = not assist.corners
+    paintButton(cornerBtn, assist.corners, "CORNERS")
+    if assist.corners then
+        if not makeCornerGuides() then
+            assist.corners = false
+        end
+    else
+        clearCornerGuides()
+    end
+    paintButton(cornerBtn, assist.corners, "CORNERS")
+end)
+listen(landingBtn.MouseButton1Click, function()
+    assist.landing = not assist.landing
+    paintButton(landingBtn, assist.landing, "RECEPTION")
+    if not assist.landing then setLandingVisible(false)
+    else updateLanding() end
+end)
+
+-- Frequencia baixa, sem RenderStepped; monitor visual independente do sensor.
+task.spawn(function()
+    local tickCount = 0
+    while alive and visualFolder.Parent do
+        tickCount = tickCount+1
+        if assist.boxes and tickCount % 4 == 0 then updateHitboxes() end
+        if assist.landing then updateLanding() end
+        if assist.corners and tickCount % 40 == 0 then
+            -- Se a quadra mudou ao teletransportar, atualiza as marcacoes.
+            makeCornerGuides()
+        end
+        task.wait(0.2)
+    end
+end)
+
+local aimShutdown = (function()
+-- =====================================================================
+-- v2.0 | AIM LAB - reimplementacao a partir de analise estatica LOCOPANI
+-- INTERCEPTA APENAS BallService.RF.Interact (Spike/ServeSpike), quando
+-- executor disponibiliza hookmetamethod ou getrawmetatable/setreadonly.
+-- Nao altera alcance/colisao no servidor nem garante acerto ou pontuacao.
+-- =====================================================================
+local RS = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local localPlayer = Players.LocalPlayer
+local aim = {
+    active = false,
+    side = "Auto",
+    depth = "Back",
+    strength = 100,
+    inset = 3,
+    drop = 0.35,
+    tiltSync = true,
+    showTarget = true,
+    receive = false,
+    receiveRange = 20,
+    maxServe = false,
+    status = "OFF",
+    spikeCalls = 0,
+    aimedCalls = 0,
+    serveCalls = 0,
+    lastAim = "NONE",
+    lastError = "",
+    target = nil,
+    lastPick = nil,
+    lastPickTime = 0,
+}
+
+local aimLeft = card(pages.AIM, 16, 4, 350, 288, "◈  AUTO CORNER / AIMBOT")
+local aimToggle = button(aimLeft, "AUTO CORNER: OFF", 15, 42, 316, 35, C.cyan)
+local aimSide = button(aimLeft, "SIDE: AUTO", 15, 86, 151, 30, C.blue)
+local aimDepth = button(aimLeft, "DEPTH: BACK", 179, 86, 151, 30, C.blue)
+local aimMinus = button(aimLeft, "-", 15, 128, 43, 32, C.blue)
+local aimStrengthLabel = text(aimLeft, "AIM STRENGTH: 100%", UDim2.fromOffset(63, 129),
+    UDim2.fromOffset(216, 30), 14, C.cyan, true)
+local aimPlus = button(aimLeft, "+", 290, 128, 40, 32, C.blue)
+local dropButton = button(aimLeft, "DROP: 0.35", 15, 171, 151, 32, C.blue)
+local insetButton = button(aimLeft, "MARGIN: 3.0", 179, 171, 151, 32, C.blue)
+local tiltButton = button(aimLeft, "SYNC TILT: ON", 15, 215, 151, 32, C.deepBlue)
+local targetButton = button(aimLeft, "TARGET DOT: ON", 179, 215, 151, 32, C.deepBlue)
+text(aimLeft, "TECLA C: liga/desliga | potencia nao e garantida", 
+    UDim2.fromOffset(14, 254), UDim2.fromOffset(323, 24), 10, C.muted)
+
+local aimRight = card(pages.AIM, 379, 4, 359, 288, "◎  LIVE AIM DIAGNOSTICS")
+local aimHookLabel = text(aimRight, "HOOK: NOT INITIALIZED", UDim2.fromOffset(16, 42),
+    UDim2.fromOffset(326, 25), 13, C.yellow, true)
+local aimRemoteLabel = text(aimRight, "BALL SERVICE: CHECKING", UDim2.fromOffset(16, 72),
+    UDim2.fromOffset(324, 25), 12, C.yellow, true)
+local aimTargetLabel = text(aimRight, "TARGET: NONE", UDim2.fromOffset(16, 106),
+    UDim2.fromOffset(325, 25), 13, C.cyan, true)
+local aimHitsLabel = text(aimRight, "SPIKE REQUESTS AIMED: 0", UDim2.fromOffset(16, 140),
+    UDim2.fromOffset(320, 25), 12, C.white, true)
+local aimServeLabel = text(aimRight, "SERVE REQUESTS EDITED: 0", UDim2.fromOffset(16, 171),
+    UDim2.fromOffset(321, 25), 12, C.white, true)
+local aimDetailLabel = text(aimRight, "Nenhum contato detectado", UDim2.fromOffset(16, 208),
+    UDim2.fromOffset(320, 25), 12, C.muted)
+local rescanAim = button(aimRight, "RECHECK GAME REMOTES", 16, 245, 322, 29, C.deepBlue)
+
+local auxLeft = card(pages.AIM, 16, 308, 350, 242, "⚡  ACTION ASSISTS")
+local receiveToggle = button(auxLeft, "AUTO RECEIVE (TEST): OFF", 15, 42, 317, 36, C.blue)
+local receiveRangeBtn = button(auxLeft, "RECEIVE RADIUS: 20", 15, 90, 317, 34, C.deepBlue)
+local serveToggle = button(auxLeft, "MAX SERVE REQUEST (TEST): OFF", 15, 138, 317, 34, C.blue)
+text(auxLeft, "TEST: envio local nao prova aceite do servidor.",
+    UDim2.fromOffset(15, 188), UDim2.fromOffset(317, 36), 11, C.muted)
+
+local auxRight = card(pages.AIM, 379, 308, 359, 242, "▤  SOURCE / REALITY CHECK")
+text(auxRight, "Auto Corner: alvo calculado pela quadra e defesa",
+    UDim2.fromOffset(16, 44), UDim2.fromOffset(326, 32), 12, C.cyan)
+text(auxRight, "Hitbox visual: nao muda colisao do servidor",
+    UDim2.fromOffset(16, 90), UDim2.fromOffset(326, 32), 12, C.muted)
+text(auxRight, "Auto Receive: acionamento client-side experimental",
+    UDim2.fromOffset(16, 132), UDim2.fromOffset(326, 32), 12, C.muted)
+text(auxRight, "Spectate: permanece UNKNOWN; sem alertas falsos",
+    UDim2.fromOffset(16, 177), UDim2.fromOffset(326, 37), 12, C.yellow)
+
+local aimMarker = Instance.new("Part")
+aimMarker.Name = "DanXys_AimTarget"
+aimMarker.Shape = Enum.PartType.Ball
+aimMarker.Material = Enum.Material.Neon
+aimMarker.Color = C.cyan
+aimMarker.Size = Vector3.new(1.6, 0.22, 1.6)
+aimMarker.Anchored = true
+aimMarker.CanCollide = false
+aimMarker.CanTouch = false
+aimMarker.CanQuery = false
+aimMarker.Transparency = 1
+aimMarker.Parent = visualFolder
+
+local interactRemote, serveRemote, receiveDoMove, receiveStopEmotes
+local function resolveAimRemotes()
+    local packages = RS:FindFirstChild("Packages")
+    local idx = packages and packages:FindFirstChild("_Index")
+    local knot = idx and idx:FindFirstChild("sleitnick_knit@1.7.0")
+    local knit = knot and knot:FindFirstChild("knit")
+    local services = knit and knit:FindFirstChild("Services")
+    local ballService = services and services:FindFirstChild("BallService")
+    local gameService = services and services:FindFirstChild("GameService")
+    local animationService = services and services:FindFirstChild("AnimationService")
+    local ballRF = ballService and ballService:FindFirstChild("RF")
+    local ballRE = ballService and ballService:FindFirstChild("RE")
+    local gameRF = gameService and gameService:FindFirstChild("RF")
+    local animationRE = animationService and animationService:FindFirstChild("RE")
+    interactRemote = ballRF and ballRF:FindFirstChild("Interact")
+    serveRemote = gameRF and gameRF:FindFirstChild("Serve")
+    receiveDoMove = ballRE and ballRE:FindFirstChild("DoMove")
+    receiveStopEmotes = animationRE and animationRE:FindFirstChild("StopAllEmotes")
+    aimRemoteLabel.Text = "BALL SERVICE: " .. (interactRemote and "FOUND" or "NOT FOUND")
+    aimRemoteLabel.TextColor3 = interactRemote and C.green or C.yellow
+    return interactRemote ~= nil
+end
+
+local function aimOrigin(root)
+    local closest = nil
+    local distance = 25
+    for _, child in ipairs(workspace:GetChildren()) do
+        if child:IsA("Model") and child.Name:match("^CLIENT_BALL_%d+$") then
+            local part = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart", true)
+            if part then
+                local d = (part.Position - root.Position).Magnitude
+                if d < distance then
+                    closest, distance = part, d
+                end
+            end
+        end
+    end
+    return (closest and closest.Position) or root.Position
+end
+
+local function aimTarget()
+    local character = localPlayer.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not root then return nil, "NO CHARACTER" end
+    local cf, sz = findCourt()
+    if not cf or not sz then return nil, "COURT NOT FOUND" end
+    if sz.X < 4 or sz.Z < 4 then return nil, "INVALID COURT" end
+    local r = cf:PointToObjectSpace(root.Position)
+    local net = workspace:FindFirstChild("Map")
+    net = net and net:FindFirstChild("BallCollideOnly")
+    net = net and net:FindFirstChild("Net")
+    local netZ = net and cf:PointToObjectSpace(net.Position).Z or 0
+    local enemyDirection = (r.Z >= netZ) and -1 or 1
+    local halfX = sz.X * 0.5
+    local halfZ = sz.Z * 0.5
+    local margin = math.min(aim.inset, halfX - 0.5, halfZ - 0.5)
+    local xEdge = halfX - margin
+    local zBack = enemyDirection * (halfZ - margin)
+    local zNear = netZ + enemyDirection * (math.max(halfZ * 0.32, margin + 1))
+    zNear = math.clamp(zNear, -halfZ + margin, halfZ - margin)
+    local origin = aimOrigin(root)
+    local originLocal = cf:PointToObjectSpace(origin)
+    local opponents = {}
+    for _, person in ipairs(Players:GetPlayers()) do
+        if person ~= localPlayer and (not localPlayer.Team or person.Team ~= localPlayer.Team) then
+            local oppChar = person.Character
+            local oppRoot = oppChar and oppChar:FindFirstChild("HumanoidRootPart")
+            local hum = oppChar and oppChar:FindFirstChildOfClass("Humanoid")
+            if oppRoot and hum and hum.Health > 0 then
+                local localPos = cf:PointToObjectSpace(oppRoot.Position)
+                if (localPos.Z - netZ) * enemyDirection > 0 then
+                    local velocity = cf:VectorToObjectSpace(oppRoot.AssemblyLinearVelocity)
+                    table.insert(opponents, Vector2.new(localPos.X + velocity.X * 0.16,
+                        localPos.Z + velocity.Z * 0.16))
+                end
+            end
+        end
+    end
+    local cam = workspace.CurrentCamera
+    local forward = cam and cam.CFrame.LookVector or root.CFrame.LookVector
+    local flatForward = Vector3.new(forward.X, 0, forward.Z)
+    if flatForward.Magnitude > 0.01 then flatForward = flatForward.Unit end
+
+    local candidates = {}
+    local function insert(side, depth, x, z)
+        if aim.side ~= "Auto" and aim.side ~= side then return end
+        if aim.depth ~= "All" and aim.depth ~= depth then return end
+        local localPoint = Vector3.new(x, sz.Y * 0.5 + 0.2, z)
+        local world = cf:PointToWorldSpace(localPoint)
+        local closest = 40
+        for _, opp in ipairs(opponents) do
+            closest = math.min(closest, (opp - Vector2.new(x, z)).Magnitude)
+        end
+        local toward = Vector3.new(world.X - origin.X, 0, world.Z - origin.Z)
+        local directionScore = toward.Magnitude > 0.01
+            and math.max(-1, math.min(1, toward.Unit:Dot(flatForward))) or 0
+        local score = closest + directionScore * 2.0 + (depth == "Back" and 1.4 or 0)
+        local key = side .. " " .. depth
+        if aim.lastPick == key and os.clock() - aim.lastPickTime < 0.65 then
+            score = score + 1.8
+        end
+        table.insert(candidates, {key = key, world = world, score = score})
+    end
+    insert("Left", "Back", -xEdge, zBack)
+    insert("Right", "Back", xEdge, zBack)
+    insert("Left", "Nearest", -xEdge, zNear)
+    insert("Right", "Nearest", xEdge, zNear)
+    table.sort(candidates, function(a, b) return a.score > b.score end)
+    local picked = candidates[1]
+    if not picked then return nil, "NO CORNER AVAILABLE" end
+    aim.lastPick = picked.key
+    aim.lastPickTime = os.clock()
+    local vec = Vector3.new(picked.world.X - origin.X, 0, picked.world.Z - origin.Z)
+    if vec.Magnitude < 0.01 then return nil, "BAD AIM VECTOR" end
+    return {position = picked.world, flat = vec.Unit, key = picked.key}, nil
+end
+
+-- Estado persistente para evitar empilhar metatable hooks se reexecutar.
+local env = (type(getgenv) == "function" and getgenv()) or _G
+local hookState = env.DanXys_AimHookV20
+if type(hookState) ~= "table" then
+    hookState = { installed = false, handler = nil }
+    env.DanXys_AimHookV20 = hookState
+end
+
+local function modifyAimRequest(remote, method, ...)
+    if not alive or method ~= "InvokeServer" then return nil end
+    if remote == interactRemote and aim.active then
+        local payload = ...
+        if type(payload) == "table" and (payload.Move == "Spike" or payload.Move == "ServeSpike") then
+            aim.spikeCalls = aim.spikeCalls + 1
+            local chosen, problem = aimTarget()
+            if chosen then
+                local original = payload.LookVector
+                if typeof(original) ~= "Vector3" or original.Magnitude < 0.01 then
+                    local camera = workspace.CurrentCamera
+                    original = camera and camera.CFrame.LookVector or chosen.flat
+                end
+                local origFlat = Vector3.new(original.X, 0, original.Z)
+                if origFlat.Magnitude < 0.01 then origFlat = chosen.flat end
+                local blend = math.clamp(aim.strength / 100, 0, 1)
+                local direction = origFlat.Unit:Lerp(chosen.flat, blend)
+                if direction.Magnitude < 0.01 then direction = chosen.flat end
+                direction = direction.Unit
+                local down = math.max(0.08, aim.drop)
+                local shoot = Vector3.new(direction.X, -down, direction.Z).Unit
+                local patched = table.clone(payload)
+                patched.LookVector = shoot
+                patched.Direction = shoot
+                if aim.tiltSync and typeof(payload.TiltDirection) == "Vector3" then
+                    local y = payload.TiltDirection.Y
+                    patched.TiltDirection = Vector3.new(direction.X, y, direction.Z)
+                end
+                aim.target = chosen.position
+                aim.lastAim = chosen.key
+                aim.aimedCalls = aim.aimedCalls + 1
+                return patched
+            else
+                aim.lastError = problem or "NO AIM"
+            end
+        end
+    end
+    if remote == serveRemote and aim.maxServe then
+        local args = table.pack(...)
+        if args.n >= 2 then
+            args[2] = 5
+            aim.serveCalls = aim.serveCalls + 1
+            return args, true
+        end
+    end
+    return nil
+end
+hookState.handler = modifyAimRequest
+
+local function setupAimHook()
+    resolveAimRemotes()
+    if hookState.installed then
+        aim.status = "HOOK READY"
+        return true
+    end
+    if type(getnamecallmethod) ~= "function" then
+        aim.status = "NO NAMECALL SUPPORT"
+        return false
+    end
+    if type(hookmetamethod) == "function" then
+        local original
+        local fn = function(remote, ...)
+            local method = getnamecallmethod()
+            local handler = hookState.handler
+            if handler then
+                local updated, packed = handler(remote, method, ...)
+                if packed and updated then
+                    return original(remote, table.unpack(updated, 1, updated.n))
+                elseif updated then
+                    return original(remote, updated)
+                end
+            end
+            return original(remote, ...)
+        end
+        local callable = (type(newcclosure) == "function") and newcclosure(fn) or fn
+        local ok, prev = pcall(hookmetamethod, game, "__namecall", callable)
+        if ok and type(prev) == "function" then
+            original = prev
+            hookState.installed = true
+            aim.status = "HOOK READY"
+            return true
+        end
+    end
+    if type(getrawmetatable) == "function" and type(setreadonly) == "function" then
+        local ok = pcall(function()
+            local mt = getrawmetatable(game)
+            local original = mt.__namecall
+            setreadonly(mt, false)
+            mt.__namecall = function(remote, ...)
+                local method = getnamecallmethod()
+                local handler = hookState.handler
+                if handler then
+                    local updated, packed = handler(remote, method, ...)
+                    if packed and updated then
+                        return original(remote, table.unpack(updated, 1, updated.n))
+                    elseif updated then
+                        return original(remote, updated)
+                    end
+                end
+                return original(remote, ...)
+            end
+            setreadonly(mt, true)
+        end)
+        if ok then
+            hookState.installed = true
+            aim.status = "HOOK READY"
+            return true
+        end
+    end
+    aim.status = "NO HOOK SUPPORT"
+    return false
+end
+
+local function refreshAimUI()
+    local ready = hookState.installed and interactRemote ~= nil
+    aimToggle.Text = "AUTO CORNER: " .. (aim.active and "ON" or "OFF")
+    aimToggle.TextColor3 = aim.active and C.green or C.white
+    aimSide.Text = "SIDE: " .. string.upper(aim.side)
+    aimDepth.Text = "DEPTH: " .. string.upper(aim.depth)
+    aimStrengthLabel.Text = "AIM STRENGTH: " .. tostring(aim.strength) .. "%"
+    dropButton.Text = string.format("DROP: %.2f", aim.drop)
+    insetButton.Text = string.format("MARGIN: %.1f", aim.inset)
+    tiltButton.Text = "SYNC TILT: " .. (aim.tiltSync and "ON" or "OFF")
+    targetButton.Text = "TARGET DOT: " .. (aim.showTarget and "ON" or "OFF")
+    receiveToggle.Text = "AUTO RECEIVE (TEST): " .. (aim.receive and "ON" or "OFF")
+    receiveRangeBtn.Text = "RECEIVE RADIUS: " .. tostring(aim.receiveRange)
+    serveToggle.Text = "MAX SERVE REQUEST (TEST): " .. (aim.maxServe and "ON" or "OFF")
+    aimHookLabel.Text = "HOOK: " .. aim.status
+    aimHookLabel.TextColor3 = ready and C.green or C.yellow
+    aimHitsLabel.Text = "SPIKE REQUESTS AIMED: " .. tostring(aim.aimedCalls)
+    aimServeLabel.Text = "SERVE REQUESTS EDITED: " .. tostring(aim.serveCalls)
+    aimTargetLabel.Text = "TARGET: " .. aim.lastAim
+    aimDetailLabel.Text = (aim.lastError ~= "" and aim.lastError) or
+        (aim.active and (ready and "Intercepcao habilitada; aguardando spike" or "Recurso indisponivel neste executor") or "Aim desligado")
+end
+
+listen(aimToggle.MouseButton1Click, function()
+    if not aim.active then
+        aim.active = setupAimHook() and interactRemote ~= nil
+        if not aim.active then aim.lastError = "HOOK/REMOTES NOT AVAILABLE" else aim.lastError = "" end
+    else
+        aim.active = false
+        aim.target = nil
+    end
+    refreshAimUI()
+end)
+listen(aimSide.MouseButton1Click, function()
+    aim.side = (aim.side == "Auto" and "Left") or (aim.side == "Left" and "Right") or "Auto"
+    refreshAimUI()
+end)
+listen(aimDepth.MouseButton1Click, function()
+    aim.depth = (aim.depth == "Back" and "Nearest") or (aim.depth == "Nearest" and "All") or "Back"
+    refreshAimUI()
+end)
+listen(aimMinus.MouseButton1Click, function()
+    aim.strength = math.clamp(aim.strength - 10, 10, 100)
+    refreshAimUI()
+end)
+listen(aimPlus.MouseButton1Click, function()
+    aim.strength = math.clamp(aim.strength + 10, 10, 100)
+    refreshAimUI()
+end)
+listen(dropButton.MouseButton1Click, function()
+    aim.drop = aim.drop >= 0.55 and 0.15 or math.floor((aim.drop + 0.05) * 100 + 0.5) / 100
+    refreshAimUI()
+end)
+listen(insetButton.MouseButton1Click, function()
+    aim.inset = aim.inset >= 6 and 1.5 or aim.inset + 0.75
+    refreshAimUI()
+end)
+listen(tiltButton.MouseButton1Click, function()
+    aim.tiltSync = not aim.tiltSync
+    refreshAimUI()
+end)
+listen(targetButton.MouseButton1Click, function()
+    aim.showTarget = not aim.showTarget
+    if not aim.showTarget then aimMarker.Transparency = 1 end
+    refreshAimUI()
+end)
+listen(receiveToggle.MouseButton1Click, function()
+    if not aim.receive and (type(firesignal) ~= "function" or not receiveDoMove) then
+        resolveAimRemotes()
+        if type(firesignal) ~= "function" or not receiveDoMove then
+            aim.lastError = "AUTO RECEIVE REQUIRES firesignal + DoMove"
+            refreshAimUI()
+            return
+        end
+    end
+    aim.receive = not aim.receive
+    refreshAimUI()
+end)
+listen(receiveRangeBtn.MouseButton1Click, function()
+    aim.receiveRange = aim.receiveRange >= 30 and 12 or aim.receiveRange + 3
+    refreshAimUI()
+end)
+listen(serveToggle.MouseButton1Click, function()
+    if not aim.maxServe then
+        if not setupAimHook() or not serveRemote then
+            aim.lastError = "SERVE REMOTE/HOOK UNAVAILABLE"
+            refreshAimUI()
+            return
+        end
+    end
+    aim.maxServe = not aim.maxServe
+    refreshAimUI()
+end)
+listen(rescanAim.MouseButton1Click, function()
+    resolveAimRemotes()
+    aim.status = hookState.installed and "HOOK READY" or "OFF"
+    aim.lastError = ""
+    refreshAimUI()
+end)
+listen(UserInputService.InputBegan, function(input, consumed)
+    if consumed or UserInputService:GetFocusedTextBox() then return end
+    if input.KeyCode == Enum.KeyCode.C then
+        if not aim.active then
+            aim.active = setupAimHook() and interactRemote ~= nil
+            if not aim.active then aim.lastError = "HOOK/REMOTES UNAVAILABLE" end
+        else
+            aim.active = false
+            aim.target = nil
+        end
+        refreshAimUI()
+    end
+end)
+
+local lastAimDraw = 0
+local lastReceiveTime = 0
+listen(RunService.Heartbeat, function()
+    if not alive then return end
+    local now = os.clock()
+    if now - lastAimDraw < 0.16 then return end
+    lastAimDraw = now
+    if aim.active and aim.showTarget then
+        local targetData = aimTarget()
+        if targetData then
+            aim.target = targetData.position
+            aimMarker.Position = aim.target + Vector3.new(0, 0.16, 0)
+            aimMarker.Transparency = 0.18
+        else
+            aimMarker.Transparency = 1
+        end
+    else
+        aimMarker.Transparency = 1
+    end
+    if aim.receive and now - lastReceiveTime >= 1.2 then
+        local character = localPlayer.Character
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if root and humanoid and humanoid.Health > 0
+            and humanoid.FloorMaterial ~= Enum.Material.Air
+            and humanoid:GetState() ~= Enum.HumanoidStateType.Jumping
+            and humanoid:GetState() ~= Enum.HumanoidStateType.Freefall then
+            local nearest, best = nil, aim.receiveRange
+            for _, child in ipairs(workspace:GetChildren()) do
+                if child:IsA("Model") and child.Name:match("^CLIENT_BALL_%d+$") then
+                    local part = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart", true)
+                    if part then
+                        local d = (part.Position - root.Position).Magnitude
+                        if d < best then
+                            nearest, best = part, d
+                        end
+                    end
+                end
+            end
+            if nearest and type(firesignal) == "function" and receiveDoMove then
+                local ok = pcall(function()
+                    firesignal(receiveDoMove.OnClientEvent, "Set", false, false)
+                    if receiveStopEmotes then firesignal(receiveStopEmotes.OnClientEvent) end
+                end)
+                if ok then lastReceiveTime = now end
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while alive do
+        if pages.AIM.Visible then refreshAimUI() end
+        task.wait(0.4)
+    end
+end)
+resolveAimRemotes()
+refreshAimUI()
+return function()
+    hookState.handler = nil
+    aim.active = false
+    aim.receive = false
+    aim.maxServe = false
+end
+end)() -- AIM LAB em funcao propria para nao ultrapassar limite de locals
+
 local function cleanup()
     if not alive then return end
     alive = false
+    aimShutdown()
     for _, connection in ipairs(connections) do connection:Disconnect() end
     for _, t in ipairs(titleTweens) do pcall(function() t:Cancel() end) end
+    if visualFolder and visualFolder.Parent then visualFolder:Destroy() end
     gui:Destroy()
 end
 _G.DanXysCleanup = cleanup
@@ -1156,6 +1950,6 @@ end)
 setMode("PUBLIC")
 showTab("DASHBOARD")
 refreshStatus()
-notify("DANXYS ANTI TELA", "Server Monitor v1.8 ativo", C.cyan)
-print("[DanXys Anti Tela v1.8] Sensor active | Server:", serverType())
+notify("DANXYS ANTI TELA", "v2.0 Aim Lab | Server Monitor", C.cyan)
+print("[DanXys Anti Tela v2.0] Sensor active | Server:", serverType())
 print("[DanXys] Spectate: UNKNOWN (not observable via Players)")
