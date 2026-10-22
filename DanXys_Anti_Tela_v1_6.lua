@@ -1,8 +1,8 @@
 --[[
-    DanXys Anti Tela v2.0 | Aim Lab + Full-Panel Particles + Circular Radar + Neon UI
+    DanXys Anti Tela v2.1 | Ball Contact Lab + Auto Corner + Neon UI
     Interface Luau client-side. Usa apenas Players e propriedades publicas.
     Nao identifica espectadores invisiveis nem ferramentas administrativas.
-    Pop-ups 1.5s + hitbox visual + canto e recepcao estimados (guias locais).
+    Pop-ups 1.5s + zona de bola ajustavel + mira de canto. Client-only.
 ]]
 
 local Players = game:GetService("Players")
@@ -481,7 +481,7 @@ else
         Color = ColorSequence.new(C.white, C.cyan)
     }, subtitle)
 end
-local version = text(panel, "v2.0  /  AIM LAB", UDim2.fromOffset(490, 47),
+local version = text(panel, "v2.1  /  BALL AIM", UDim2.fromOffset(490, 47),
     UDim2.fromOffset(193, 25), 13, C.cyan, true)
 version.Font = Enum.Font.GothamBlack
 local minimize = button(panel, "—", 669, 15, 30, 29, C.blue)
@@ -1155,7 +1155,14 @@ local assist = {
     corners = false,
     landing = false
 }
-local hitboxAdornments = {}
+local hitboxAdornments = {} -- legado, substituido por zona da bola
+local ballZoneRadius = 12
+local localBallContact = false
+local expandedBallParts = setmetatable({}, {__mode="k"})
+local ballZoneMarker = nil
+local ballLiveDistance = nil
+local ballVerticalDelta = nil
+local trackedZonePart = nil
 local courtMarks = {}
 local landingMarker
 local ballPart
@@ -1163,11 +1170,11 @@ local lastBallSearch = -math.huge
 local lastCourtSearch = -math.huge
 local courtCF, courtSZ, groundY
 
-local hitboxBtn = button(controlsCard, "HITBOX VISUAL: OFF", 17, 200, 205, 34, C.deepBlue)
+local hitboxBtn = button(controlsCard, "BALL ZONE: OFF", 17, 200, 205, 34, C.deepBlue)
 local cornerBtn = button(controlsCard, "CORNERS: OFF", 234, 200, 196, 34, C.deepBlue)
 local landingBtn = button(controlsCard, "RECEPTION: OFF", 442, 200, 205, 34, C.deepBlue)
 local assistInfo = text(controlsCard,
-    "Guias visuais. Sem alterar colisao, golpes ou recepcao do servidor.",
+    "Zona da bola: exibicao local | CONTACT LOCAL: experimental.",
     UDim2.fromOffset(18, 245), UDim2.fromOffset(665, 32), 12, C.muted)
 
 local function paintButton(b, enabled, label)
@@ -1228,45 +1235,82 @@ local function makeCornerGuides()
     return true
 end
 
-local function clearHitboxes()
-    for _, ador in pairs(hitboxAdornments) do
-        if ador.Parent then ador:Destroy() end
+-- Zona focada na bola, nao nas caixas de jogadores.
+-- A expansao de contato e local ao cliente e depende do jogo utilizar
+-- a geometria replicada para testes de alcance. Nao altera o servidor.
+local findBall
+local function restoreExpandedBalls()
+    for part, state in pairs(expandedBallParts) do
+        pcall(function()
+            if part and part.Parent then
+                part.Size = state.size
+                part.CanTouch = state.touch
+                part.CanQuery = state.query
+            end
+        end)
+        expandedBallParts[part] = nil
     end
-    table.clear(hitboxAdornments)
+end
+
+local function clearHitboxes(force)
+    if ballZoneMarker and ballZoneMarker.Parent then
+        ballZoneMarker.Transparency = 1
+    end
+    if force or not localBallContact then
+        restoreExpandedBalls()
+    end
+end
+
+local function ensureZone()
+    if ballZoneMarker and ballZoneMarker.Parent then return end
+    ballZoneMarker = Instance.new("Part")
+    ballZoneMarker.Name = "DanXys_BALL_ZONE"
+    ballZoneMarker.Shape = Enum.PartType.Ball
+    ballZoneMarker.Anchored = true
+    ballZoneMarker.CanCollide = false
+    ballZoneMarker.CanTouch = false
+    ballZoneMarker.CanQuery = false
+    ballZoneMarker.Material = Enum.Material.ForceField
+    ballZoneMarker.CastShadow = false
+    ballZoneMarker.Color = C.cyan
+    ballZoneMarker.Transparency = 1
+    ballZoneMarker.Parent = visualFolder
 end
 
 local function updateHitboxes()
-    if not assist.boxes then return end
-    local seen = {}
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= Players.LocalPlayer then
-            local character = player.Character
-            local root = character and character:FindFirstChild("HumanoidRootPart")
-            if root then
-                seen[player.UserId] = true
-                local adorn = hitboxAdornments[player.UserId]
-                if not adorn or not adorn.Parent then
-                    adorn = Instance.new("BoxHandleAdornment")
-                    adorn.Name = "DanXysHitboxVisual"
-                    adorn.Adornee = root
-                    adorn.AlwaysOnTop = true
-                    adorn.ZIndex = 3
-                    adorn.Transparency = 0.77
-                    adorn.Color3 = C.cyan
-                    adorn.Parent = visualFolder
-                    hitboxAdornments[player.UserId] = adorn
-                end
-                adorn.Adornee = root
-                adorn.Size = Vector3.new(math.max(root.Size.X, 4),
-                    math.max(root.Size.Y, 5), math.max(root.Size.Z, 4))
-            end
-        end
+    if not (assist.boxes or localBallContact) then return end
+    local p = findBall()
+    trackedZonePart = p
+    if not p or not p.Parent then
+        ballLiveDistance = nil
+        ballVerticalDelta = nil
+        if ballZoneMarker then ballZoneMarker.Transparency = 1 end
+        return
     end
-    for id, adorn in pairs(hitboxAdornments) do
-        if not seen[id] then
-            adorn:Destroy()
-            hitboxAdornments[id] = nil
+    if assist.boxes then
+        ensureZone()
+        ballZoneMarker.Size = Vector3.new(ballZoneRadius * 2, ballZoneRadius * 2, ballZoneRadius * 2)
+        ballZoneMarker.Position = p.Position
+        ballZoneMarker.Transparency = 0.83
+    elseif ballZoneMarker then
+        ballZoneMarker.Transparency = 1
+    end
+    local root = Players.LocalPlayer.Character and Players.LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    ballLiveDistance = root and (root.Position - p.Position).Magnitude or nil
+    ballVerticalDelta = root and (p.Position.Y - root.Position.Y) or nil
+    if localBallContact and p:IsA("BasePart") then
+        if not expandedBallParts[p] then
+            expandedBallParts[p] = {size=p.Size, touch=p.CanTouch, query=p.CanQuery}
         end
+        -- Teste de alcance local. O servidor pode rejeitar totalmente.
+        local desiredSize = Vector3.new(ballZoneRadius*2, ballZoneRadius*2, ballZoneRadius*2)
+        pcall(function()
+            if p.Size ~= desiredSize then p.Size = desiredSize end
+            p.CanTouch = true
+            p.CanQuery = true
+        end)
+    elseif next(expandedBallParts) then
+        restoreExpandedBalls()
     end
 end
 
@@ -1278,7 +1322,7 @@ local function isWorldBall(p)
     return true
 end
 
-local function findBall()
+findBall = function()
     for _, model in ipairs(workspace:GetChildren()) do
         if model:IsA("Model") and model.Name:match("^CLIENT_BALL_%d+$") then
             local first = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)
@@ -1359,7 +1403,7 @@ end
 
 listen(hitboxBtn.MouseButton1Click, function()
     assist.boxes = not assist.boxes
-    paintButton(hitboxBtn, assist.boxes, "HITBOX VISUAL")
+    paintButton(hitboxBtn, assist.boxes, "BALL ZONE")
     if not assist.boxes then clearHitboxes() else updateHitboxes() end
 end)
 listen(cornerBtn.MouseButton1Click, function()
@@ -1386,13 +1430,21 @@ task.spawn(function()
     local tickCount = 0
     while alive and visualFolder.Parent do
         tickCount = tickCount+1
-        if assist.boxes and tickCount % 4 == 0 then updateHitboxes() end
+        if (assist.boxes or localBallContact) and tickCount % 1 == 0 then updateHitboxes() end
         if assist.landing then updateLanding() end
         if assist.corners and tickCount % 40 == 0 then
             -- Se a quadra mudou ao teletransportar, atualiza as marcacoes.
             makeCornerGuides()
         end
         task.wait(0.2)
+    end
+end)
+
+-- O marcador segue a bola em FPS de renderizacao, nao a cada 0.2s.
+listen(game:GetService("RunService").RenderStepped, function()
+    if not alive or not assist.boxes or not ballZoneMarker or ballZoneMarker.Transparency >= 1 then return end
+    if trackedZonePart and trackedZonePart.Parent then
+        ballZoneMarker.Position = trackedZonePart.Position
     end
 end)
 
@@ -1412,7 +1464,7 @@ local aim = {
     depth = "Back",
     strength = 100,
     inset = 3,
-    drop = 0.35,
+    drop = 0.17,
     tiltSync = true,
     showTarget = true,
     receive = false,
@@ -1437,11 +1489,11 @@ local aimMinus = button(aimLeft, "-", 15, 128, 43, 32, C.blue)
 local aimStrengthLabel = text(aimLeft, "AIM STRENGTH: 100%", UDim2.fromOffset(63, 129),
     UDim2.fromOffset(216, 30), 14, C.cyan, true)
 local aimPlus = button(aimLeft, "+", 290, 128, 40, 32, C.blue)
-local dropButton = button(aimLeft, "DROP: 0.35", 15, 171, 151, 32, C.blue)
+local dropButton = button(aimLeft, "DROP: 0.17", 15, 171, 151, 32, C.blue)
 local insetButton = button(aimLeft, "MARGIN: 3.0", 179, 171, 151, 32, C.blue)
 local tiltButton = button(aimLeft, "SYNC TILT: ON", 15, 215, 151, 32, C.deepBlue)
 local targetButton = button(aimLeft, "TARGET DOT: ON", 179, 215, 151, 32, C.deepBlue)
-text(aimLeft, "TECLA C: liga/desliga | potencia nao e garantida", 
+text(aimLeft, "C: alternar | altura / rede calculadas automaticamente", 
     UDim2.fromOffset(14, 254), UDim2.fromOffset(323, 24), 10, C.muted)
 
 local aimRight = card(pages.AIM, 379, 4, 359, 288, "◎  LIVE AIM DIAGNOSTICS")
@@ -1459,22 +1511,26 @@ local aimDetailLabel = text(aimRight, "Nenhum contato detectado", UDim2.fromOffs
     UDim2.fromOffset(320, 25), 12, C.muted)
 local rescanAim = button(aimRight, "RECHECK GAME REMOTES", 16, 245, 322, 29, C.deepBlue)
 
-local auxLeft = card(pages.AIM, 16, 308, 350, 242, "⚡  ACTION ASSISTS")
-local receiveToggle = button(auxLeft, "AUTO RECEIVE (TEST): OFF", 15, 42, 317, 36, C.blue)
-local receiveRangeBtn = button(auxLeft, "RECEIVE RADIUS: 20", 15, 90, 317, 34, C.deepBlue)
-local serveToggle = button(auxLeft, "MAX SERVE REQUEST (TEST): OFF", 15, 138, 317, 34, C.blue)
-text(auxLeft, "TEST: envio local nao prova aceite do servidor.",
-    UDim2.fromOffset(15, 188), UDim2.fromOffset(317, 36), 11, C.muted)
+local auxLeft = card(pages.AIM, 16, 308, 350, 242, "◉  BALL CONTACT / ATTACK ZONE")
+local ballZoneBtn = button(auxLeft, "BALL ZONE: OFF", 15, 41, 317, 33, C.cyan)
+local ballRadiusMinus = button(auxLeft, "−", 15, 86, 45, 34, C.blue)
+local ballRadiusLabel = text(auxLeft, "ZONE RADIUS: 12 studs", UDim2.fromOffset(68, 86),
+    UDim2.fromOffset(210, 34), 13, C.cyan, true)
+local ballRadiusPlus = button(auxLeft, "+", 284, 86, 46, 34, C.blue)
+local localContactBtn = button(auxLeft, "LOCAL CONTACT [TEST]: OFF", 15, 131, 317, 33, C.deepBlue)
+local ballZoneInfo = text(auxLeft, "BALL: Searching...", UDim2.fromOffset(15, 173),
+    UDim2.fromOffset(320, 24), 12, C.white, true)
+text(auxLeft, "Contato local nao confirma alcance no servidor.",
+    UDim2.fromOffset(15, 207), UDim2.fromOffset(323, 22), 11, C.muted)
 
-local auxRight = card(pages.AIM, 379, 308, 359, 242, "▤  SOURCE / REALITY CHECK")
-text(auxRight, "Auto Corner: alvo calculado pela quadra e defesa",
-    UDim2.fromOffset(16, 44), UDim2.fromOffset(326, 32), 12, C.cyan)
-text(auxRight, "Hitbox visual: nao muda colisao do servidor",
-    UDim2.fromOffset(16, 90), UDim2.fromOffset(326, 32), 12, C.muted)
-text(auxRight, "Auto Receive: acionamento client-side experimental",
-    UDim2.fromOffset(16, 132), UDim2.fromOffset(326, 32), 12, C.muted)
-text(auxRight, "Spectate: permanece UNKNOWN; sem alertas falsos",
-    UDim2.fromOffset(16, 177), UDim2.fromOffset(326, 37), 12, C.yellow)
+local auxRight = card(pages.AIM, 379, 308, 359, 242, "▤  SPIKE / CONTACT DIAGNOSTICS")
+local receiveToggle = button(auxRight, "AUTO RECEIVE (TEST): OFF", 15, 40, 326, 31, C.blue)
+local receiveRangeBtn = button(auxRight, "RECEIVE RADIUS: 20", 15, 81, 326, 30, C.deepBlue)
+local serveToggle = button(auxRight, "MAX SERVE REQUEST (TEST): OFF", 15, 122, 326, 30, C.blue)
+local aimSafety = text(auxRight, "NET CLEARANCE: AUTO | AUTO ARC", UDim2.fromOffset(16, 169),
+    UDim2.fromOffset(325, 23), 11, C.cyan, true)
+text(auxRight, "Muito baixo pode ser regra de altura/tempo do jogo.",
+    UDim2.fromOffset(16, 203), UDim2.fromOffset(326, 29), 11, C.muted)
 
 local aimMarker = Instance.new("Part")
 aimMarker.Name = "DanXys_AimTarget"
@@ -1514,7 +1570,7 @@ end
 
 local function aimOrigin(root)
     local closest = nil
-    local distance = 25
+    local distance = math.max(45, ballZoneRadius + 15)
     for _, child in ipairs(workspace:GetChildren()) do
         if child:IsA("Model") and child.Name:match("^CLIENT_BALL_%d+$") then
             local part = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart", true)
@@ -1614,6 +1670,32 @@ if type(hookState) ~= "table" then
     env.DanXys_AimHookV20 = hookState
 end
 
+-- Direcionamento adaptativo: evita mirar para baixo demais antes da rede.
+-- Modelo heuristico; velocidade/spin do servidor podem mudar a trajetoria.
+local function calculateSafePitch(origin, target)
+    local dx = target.X - origin.X
+    local dz = target.Z - origin.Z
+    local horizontal = math.sqrt(dx*dx + dz*dz)
+    if horizontal < 0.5 then return aim.drop, "NO RANGE" end
+    local flatDrop = math.clamp(aim.drop, 0.04, 0.25)
+    local heightDifference = origin.Y - target.Y
+    local geometricDrop = math.clamp(heightDifference / horizontal * 0.32, -0.04, 0.25)
+    local pitchDown = math.clamp((flatDrop + geometricDrop) * 0.55, -0.07, 0.26)
+    local map = workspace:FindFirstChild("Map")
+    local colliders = map and map:FindFirstChild("BallCollideOnly")
+    local net = colliders and colliders:FindFirstChild("Net")
+    if net and net:IsA("BasePart") then
+        local top = net.Position.Y + net.Size.Y * 0.5
+        local netAlong = math.abs(net.Position.Z - origin.Z)
+        local clearHeight = 1.3
+        local maxDown = (origin.Y - top - clearHeight) / math.max(netAlong, 2)
+        pitchDown = math.min(pitchDown, maxDown - 0.015)
+        pitchDown = math.clamp(pitchDown, -0.22, 0.26)
+        return pitchDown, string.format("NET: %0.2f", pitchDown)
+    end
+    return pitchDown, string.format("ARC: %0.2f", pitchDown)
+end
+
 local function modifyAimRequest(remote, method, ...)
     if not alive or method ~= "InvokeServer" then return nil end
     if remote == interactRemote and aim.active then
@@ -1630,18 +1712,25 @@ local function modifyAimRequest(remote, method, ...)
                 local origFlat = Vector3.new(original.X, 0, original.Z)
                 if origFlat.Magnitude < 0.01 then origFlat = chosen.flat end
                 local blend = math.clamp(aim.strength / 100, 0, 1)
-                local direction = origFlat.Unit:Lerp(chosen.flat, blend)
+                -- Evitar :Lerp no hook: calculo vetorial simples sem namecall adicional.
+                local direction = origFlat.Unit * (1-blend) + chosen.flat * blend
                 if direction.Magnitude < 0.01 then direction = chosen.flat end
                 direction = direction.Unit
-                local down = math.max(0.08, aim.drop)
-                local shoot = Vector3.new(direction.X, -down, direction.Z).Unit
+                local root = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart")
+                local origin = root and aimOrigin(root) or chosen.position
+                local pitch, clearanceInfo = calculateSafePitch(origin, chosen.position)
+                local shoot = (direction - Vector3.new(0, pitch, 0)).Unit
                 local patched = table.clone(payload)
                 patched.LookVector = shoot
                 patched.Direction = shoot
+                if typeof(payload.MoveDirection) == "Vector3" then patched.MoveDirection = shoot end
                 if aim.tiltSync and typeof(payload.TiltDirection) == "Vector3" then
-                    local y = payload.TiltDirection.Y
-                    patched.TiltDirection = Vector3.new(direction.X, y, direction.Z)
+                    local originalTilt = payload.TiltDirection
+                    local tiltH = math.sqrt(originalTilt.X^2 + originalTilt.Z^2)
+                    patched.TiltDirection = Vector3.new(
+                        direction.X * tiltH, originalTilt.Y, direction.Z * tiltH)
                 end
+                aimSafety.Text = "NET CLEARANCE: " .. clearanceInfo
                 aim.target = chosen.position
                 aim.lastAim = chosen.key
                 aim.aimedCalls = aim.aimedCalls + 1
@@ -1666,7 +1755,7 @@ hookState.handler = modifyAimRequest
 local function setupAimHook()
     resolveAimRemotes()
     if hookState.installed then
-        aim.status = "HOOK READY"
+        aim.status = "HOOK INSTALLED"
         return true
     end
     if type(getnamecallmethod) ~= "function" then
@@ -1693,7 +1782,7 @@ local function setupAimHook()
         if ok and type(prev) == "function" then
             original = prev
             hookState.installed = true
-            aim.status = "HOOK READY"
+            aim.status = "HOOK INSTALLED"
             return true
         end
     end
@@ -1719,7 +1808,7 @@ local function setupAimHook()
         end)
         if ok then
             hookState.installed = true
-            aim.status = "HOOK READY"
+            aim.status = "HOOK INSTALLED"
             return true
         end
     end
@@ -1746,8 +1835,15 @@ local function refreshAimUI()
     aimHitsLabel.Text = "SPIKE REQUESTS AIMED: " .. tostring(aim.aimedCalls)
     aimServeLabel.Text = "SERVE REQUESTS EDITED: " .. tostring(aim.serveCalls)
     aimTargetLabel.Text = "TARGET: " .. aim.lastAim
+    ballZoneBtn.Text = "BALL ZONE: " .. (assist.boxes and "ON" or "OFF")
+    ballRadiusLabel.Text = "ZONE RADIUS: " .. tostring(ballZoneRadius) .. " studs"
+    localContactBtn.Text = "LOCAL CONTACT [TEST]: " .. (localBallContact and "ON" or "OFF")
+    ballZoneInfo.Text = ballLiveDistance and string.format("DIST %.1f/%.0f  |  HEIGHT %+0.1f  |  %s",
+        ballLiveDistance, ballZoneRadius, ballVerticalDelta or 0,
+        ballLiveDistance <= ballZoneRadius and "IN LOCAL ZONE" or "OUTSIDE") or "BALL: not available"
+    ballZoneInfo.TextColor3 = ballLiveDistance and (ballLiveDistance <= ballZoneRadius and C.green or C.yellow) or C.muted
     aimDetailLabel.Text = (aim.lastError ~= "" and aim.lastError) or
-        (aim.active and (ready and "Intercepcao habilitada; aguardando spike" or "Recurso indisponivel neste executor") or "Aim desligado")
+        (aim.active and (ready and "Hook instalado; confirme pelo contador apos spike" or "Recurso indisponivel neste executor") or "Aim desligado")
 end
 
 listen(aimToggle.MouseButton1Click, function()
@@ -1777,7 +1873,7 @@ listen(aimPlus.MouseButton1Click, function()
     refreshAimUI()
 end)
 listen(dropButton.MouseButton1Click, function()
-    aim.drop = aim.drop >= 0.55 and 0.15 or math.floor((aim.drop + 0.05) * 100 + 0.5) / 100
+    aim.drop = aim.drop >= 0.26 and 0.07 or math.floor((aim.drop + 0.03) * 100 + 0.5) / 100
     refreshAimUI()
 end)
 listen(insetButton.MouseButton1Click, function()
@@ -1791,6 +1887,30 @@ end)
 listen(targetButton.MouseButton1Click, function()
     aim.showTarget = not aim.showTarget
     if not aim.showTarget then aimMarker.Transparency = 1 end
+    refreshAimUI()
+end)
+listen(ballZoneBtn.MouseButton1Click, function()
+    assist.boxes = not assist.boxes
+    paintButton(hitboxBtn, assist.boxes, "BALL ZONE")
+    if not assist.boxes then clearHitboxes(false) else updateHitboxes() end
+    refreshAimUI()
+end)
+listen(ballRadiusMinus.MouseButton1Click, function()
+    ballZoneRadius = math.max(4, ballZoneRadius - 4)
+    updateHitboxes()
+    refreshAimUI()
+end)
+listen(ballRadiusPlus.MouseButton1Click, function()
+    ballZoneRadius = math.min(52, ballZoneRadius + 4)
+    updateHitboxes()
+    refreshAimUI()
+end)
+listen(localContactBtn.MouseButton1Click, function()
+    localBallContact = not localBallContact
+    if not localBallContact then restoreExpandedBalls() else updateHitboxes() end
+    if localBallContact then
+        notify("LOCAL CONTACT [TEST]", "Expansao SOMENTE no cliente; pode nao gerar hit no servidor.", C.yellow)
+    end
     refreshAimUI()
 end)
 listen(receiveToggle.MouseButton1Click, function()
@@ -1910,6 +2030,7 @@ local function cleanup()
     if not alive then return end
     alive = false
     aimShutdown()
+    clearHitboxes(true)
     for _, connection in ipairs(connections) do connection:Disconnect() end
     for _, t in ipairs(titleTweens) do pcall(function() t:Cancel() end) end
     if visualFolder and visualFolder.Parent then visualFolder:Destroy() end
@@ -1950,6 +2071,6 @@ end)
 setMode("PUBLIC")
 showTab("DASHBOARD")
 refreshStatus()
-notify("DANXYS ANTI TELA", "v2.0 Aim Lab | Server Monitor", C.cyan)
-print("[DanXys Anti Tela v2.0] Sensor active | Server:", serverType())
+notify("DANXYS ANTI TELA", "v2.1 Ball Aim | Server Monitor", C.cyan)
+print("[DanXys Anti Tela v2.1] Sensor active | Server:", serverType())
 print("[DanXys] Spectate: UNKNOWN (not observable via Players)")
