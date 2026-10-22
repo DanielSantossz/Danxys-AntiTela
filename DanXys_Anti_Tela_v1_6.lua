@@ -1,7 +1,7 @@
 --[[
-  DANXYS ANTI TELA | FULL NEON - SPIKE RESCUE v2.4
-  Spike Rescue: um unico ponto de edicao do request Interact/Spike.
-  Mantem o Spike original se a mira falhar; testes de fisica local sao opcionais.
+  DANXYS ANTI TELA | FULL NEON - SPIKE LAB v2.5
+  Spike Lab: SEM interceptar requests na inicializacao, para preservar o Spike nativo.
+  A mira visual, stutter da bola e fisica local experimental tem controles separados.
   O servidor tem autoridade sobre colisao, potencia e fisica; valores locais nao garantem acerto.
   Validacao de key e chamada a sirius.menu/gen2 removidas.
   UI nativa DanXys, com logo rbxassetid://133068819773560.
@@ -4011,9 +4011,11 @@ do
   v210 = f60()
   v212 = f59()
 
-  if getrawmetatable and setreadonly and getnamecallmethod then
-    f62()
-  end
+  -- CORRECAO CRITICA: o hook de __namecall da v2.4 interceptava todo InvokeServer
+  -- do Interact desde o carregamento, inclusive com recursos desligados.
+  -- Preservar a cadeia nativa de chamadas, sem hook de Spike instalado.
+  DANXYS_BASE_HOOK_OK = false
+  print('[DANXYS v2.5] SPIKE NATIVO: nenhum hook adicionado na inicializacao')
 end
 
 local function f63()
@@ -4529,6 +4531,18 @@ do
     A.impulseLift = 5
     A.impulseCount = 0
     A.impulseError = "NAO TESTADO"
+    A.stutterEnabled = false
+    A.stutterAuto = true
+    A.stutterDuration = 1.0
+    A.stutterInterval = .18
+    A.stutterTriggers = 0
+    A.stutterStatus = 'DESLIGADO'
+    A.localPulseEnabled = false -- altera AssemblyLinearVelocity so no cliente
+    A.localPulseDuration = .055
+    A.localPulseSpeedScale = .12
+    A.localPulseCooldown = 1.2
+    A.lastPulse = 0
+    A.localPulseCount = 0
     A.runSpeed = false
     A.runSpeedValue = 28
     A.walkSpeedOriginal = nil
@@ -4562,6 +4576,7 @@ do
     local function cleanup()
         if heartbeatLink then pcall(function() heartbeatLink:Disconnect() end) end
         heartbeatLink=nil
+        if A.stopStutter then pcall(A.stopStutter) end
         if A.lastSpeedHumanoid and A.lastSpeedHumanoid.Parent and A.walkSpeedOriginal then
             pcall(function() A.lastSpeedHumanoid.WalkSpeed=A.walkSpeedOriginal end)
         end
@@ -4869,16 +4884,23 @@ do
     -- Nao substitui o calculo/validacao autoritativa do servidor.
     function A.tryLocalImpulse()
         if not A.localBallImpulse then return end
-        local b=A.lastBall
+        local b=realBall()
         if not b or not b.Parent or b.Anchored then
             A.impulseError='BOLA INDISPONIVEL OU ANCORADA'
             return
         end
-        if typeof(A.lastDirection)~='Vector3' then
+        local direction=A.lastDirection
+        if typeof(direction)~='Vector3' then
+            local look=currentCamera2 and currentCamera2.CFrame.LookVector
+            if typeof(look)=='Vector3' then
+                local flat=Vector3.new(look.X,0,look.Z)
+                if flat.Magnitude>.01 then direction=flat.Unit end
+            end
+        end
+        if typeof(direction)~='Vector3' then
             A.impulseError='DIRECAO AUSENTE'
             return
         end
-        local direction=A.lastDirection
         local requested=direction*math.clamp(A.impulseSpeed,30,250)
             + Vector3.new(0,math.clamp(A.impulseLift,-20,40),0)
         local success, err=pcall(function() b.AssemblyLinearVelocity=requested end)
@@ -4924,15 +4946,140 @@ do
         return string.format('DIST %.1f | ALT %+0.1f | VEL %.0f',
             dist,delta,b.AssemblyLinearVelocity.Magnitude)
     end
+    -- DANXYS BALL LAB: efeito stutter visivel, SEM escrever no remote.
+    -- A bola real fica transparente APENAS para o cliente enquanto um proxy
+    -- mostra posicoes em passos. O servidor e a fisica de contato permanecem iguais.
+    local ghost, ghostBall, ghostOldTransparency = nil,nil,nil
+    local stutterSerial = 0
+    local lastObservedBall,lastObservedSpeed,lastStutterTrigger = nil,nil,0
+
+    function A.stopStutter()
+        stutterSerial=stutterSerial+1
+        if ghostBall and ghostBall.Parent then
+            pcall(function()
+                ghostBall.LocalTransparencyModifier=ghostOldTransparency or 0
+            end)
+        end
+        if ghost then pcall(function() ghost:Destroy() end) end
+        ghost,ghostBall,ghostOldTransparency=nil,nil,nil
+    end
+
+    function A.startStutter()
+        local b=realBall()
+        if not b or not b.Parent then
+            A.stutterStatus='BOLA NAO ENCONTRADA'
+            return false
+        end
+        A.stopStutter()
+        local proxy=Instance.new('Part')
+        proxy.Name='DANXYS_STUTTER_PROXY_LOCAL'
+        proxy.Shape=Enum.PartType.Ball
+        proxy.Size=Vector3.new(math.max(.8,b.Size.X),math.max(.8,b.Size.Y),math.max(.8,b.Size.Z))
+        proxy.Anchored=true
+        proxy.CanCollide=false
+        proxy.CanTouch=false
+        proxy.CanQuery=false
+        proxy.Material=Enum.Material.Neon
+        proxy.Color=Color3.fromRGB(0,215,255)
+        proxy.Transparency=.12
+        proxy.CFrame=b.CFrame
+        proxy.Parent=workspaceService
+        ghost=proxy
+        ghostBall=b
+        ghostOldTransparency=b.LocalTransparencyModifier
+        local mySerial=stutterSerial
+        A.stutterTriggers=A.stutterTriggers+1
+        A.stutterStatus='EFEITO VISUAL INICIADO'
+        task.spawn(function()
+            local ending=os.clock()+math.clamp(A.stutterDuration,.2,2.5)
+            while ghost==proxy and stutterSerial==mySerial and os.clock()<ending
+               and b and b.Parent and proxy.Parent do
+                local ok=pcall(function()
+                    b.LocalTransparencyModifier=1
+                    proxy.CFrame=b.CFrame
+                end)
+                if not ok then break end
+                task.wait(math.clamp(A.stutterInterval,.06,.4))
+            end
+            if ghost==proxy and stutterSerial==mySerial then
+                A.stopStutter()
+                A.stutterStatus='EFEITO VISUAL ENCERRADO'
+            end
+        end)
+        return true
+    end
+
+    -- TESTE DE FISICA CLIENTE: desacelera brevemente AssemblyLinearVelocity.
+    -- Nao tem como assegurar propriedade de rede nem persistencia no servidor.
+    function A.pulseLocalPhysics()
+        if not A.localPulseEnabled then
+            A.impulseError='PULSE LOCAL DESLIGADO'
+            return false
+        end
+        local b=realBall()
+        if not b or not b.Parent or b.Anchored then
+            A.impulseError='BOLA INDISPONIVEL OU ANCORADA'
+            return false
+        end
+        local root=localPlayer2.Character and localPlayer2.Character:FindFirstChild('HumanoidRootPart')
+        if not root or (b.Position-root.Position).Magnitude>17 then
+            A.impulseError='BOLA MUITO DISTANTE (LIMITE TESTE 17 STUDS)'
+            return false
+        end
+        local now=os.clock()
+        if now-A.lastPulse<A.localPulseCooldown then return false end
+        A.lastPulse=now
+        local before=b.AssemblyLinearVelocity
+        local reduced=before*math.clamp(A.localPulseSpeedScale,0,1)
+        local ok,err=pcall(function() b.AssemblyLinearVelocity=reduced end)
+        if not ok then A.impulseError=tostring(err):sub(1,90);return false end
+        A.localPulseCount=A.localPulseCount+1
+        A.impulseError='VELOCIDADE LOCAL MODIFICADA; SERVIDOR PODE SOBRESCREVER'
+        task.delay(math.clamp(A.localPulseDuration,.02,.15),function()
+            if b and b.Parent and not b.Anchored then
+                pcall(function()
+                    b.AssemblyLinearVelocity=before
+                end)
+            end
+        end)
+        return true
+    end
+
+    -- Aceleracao proxima ao jogador = indicio de batida. Nao prova Spike.
+    local function observeContact()
+        if not A.stutterEnabled and not A.localPulseEnabled then
+            lastObservedSpeed=nil;lastObservedBall=nil;return
+        end
+        local b=realBall()
+        if not b then lastObservedSpeed=nil;lastObservedBall=nil;return end
+        local speed=b.AssemblyLinearVelocity.Magnitude
+        if b~=lastObservedBall then
+            lastObservedBall=b
+            lastObservedSpeed=speed
+            return
+        end
+        local previous=lastObservedSpeed or speed
+        lastObservedSpeed=speed
+        local root=localPlayer2.Character and localPlayer2.Character:FindFirstChild('HumanoidRootPart')
+        if not root or (b.Position-root.Position).Magnitude>15 then return end
+        local now=os.clock()
+        if speed>38 and (speed-previous)>22 and now-lastStutterTrigger>1.3 then
+            lastStutterTrigger=now
+            if A.stutterEnabled and A.stutterAuto then pcall(A.startStutter) end
+            if A.localPulseEnabled then pcall(A.pulseLocalPhysics) end
+        end
+    end
+
     heartbeatLink=track(runService.Heartbeat:Connect(function()
         pcall(A.applyWalkSpeed)
+        pcall(observeContact)
         local now=os.clock()
         if now-lastVisual < .12 then return end
         lastVisual=now
         if not A.enabled then
             if guide then cleanVisual() end
             if A.guiStatus then
-                A.guiStatus:SetText('AUTO CORNER: DESLIGADO / SPIKE NORMAL')
+                A.guiStatus:SetText('AIM VISUAL: DESLIGADO / SPIKE NORMAL')
             end
             return
         end
@@ -4955,7 +5102,7 @@ do
         end
         if A.guiStatus then
             local label=A.lastStatus
-            if ok and plan then label='ALVO DENTRO DA QUADRA / DIRECAO PRONTA' end
+            if ok and plan then label='ALVO VISUAL (SEM ALTERAR SPIKE)' end
             A.guiStatus:SetText(label..' | SPIKES '..tostring(A.seenCount)
                 ..' / AIM '..tostring(A.aimedCount)..' / FAST '..tostring(A.fastHitCount))
         end
@@ -5019,16 +5166,16 @@ do
         end
     end
     function A.installAim()
-        if DANXYS_BASE_HOOK_OK then
-            A.aimed=true
-            A.lastStatus='HOOK BASE PRONTO / SEM HOOK ADICIONAL'
-            return true
-        end
-        A.lastStatus='EXECUTOR NAO PERMITE INTERCEPTAR SPIKE; GUIA VISUAL OK'
-        return false
+        -- Modo visual deliberado: nao altera remote de Spike.
+        -- Se a simulacao visual mostrar um alvo, isso nao e garantia de acerto.
+        A.aimed=false
+        A.lastStatus='GUIA VISUAL ATIVO / SPIKE NATIVO INTACTO'
+        return true
     end
     function A.emergencyReset()
         A.enabled=false; A.fastHit=false; A.localBallImpulse=false
+        A.localPulseEnabled=false;A.stutterEnabled=false
+        if A.stopStutter then pcall(A.stopStutter) end
         A.runSpeed=false
         v182=false; v184=false; v186=false; v188=false
         if v308 then pcall(function() v308.stop() end) end
@@ -9564,10 +9711,11 @@ v546.LeftGroupBox:AddToggle("redirectspike", {
   Default = false,
   Callback = function(value104)
     if value104 then
-      f64()
-    else
-      f66()
+      warn('[DANXYS] Redirect Spike legado nao iniciado: bloqueado para proteger o Spike nativo.')
+      local t=toggles.redirectspike
+      if t and t.SetValue then t:SetValue(false,true) end
     end
+    f66()
   end,
 })
 
@@ -9622,7 +9770,7 @@ v546.LeftGroupBox:AddLabel("Auto Corner bind"):AddKeyPicker("autocornerbind", {
 
 
 -- DANXYS RAGE AIM UI | sliders afetam calculo e assistencia (fisica autoritativa e do servidor).
-v546.CornerProGroup = v545.Main:AddLeftGroupbox("DanXys SPIKE RESCUE v2.4")
+v546.CornerProGroup = v545.Main:AddLeftGroupbox("DanXys SPIKE LAB v2.5")
 v255.guiStatus = v546.CornerProGroup:AddLabel("AUTO CORNER: DESLIGADO")
 v546.CornerProGroup:AddSlider("rageAimStrength", {
   Text="Forca da correcao HORIZONTAL (%)", Min=0,Max=100,Default=100,Rounding=0,
@@ -9703,11 +9851,63 @@ v546.CornerProGroup:AddButton("Diagnostico de contato",function()
     v174:Notify(v255.getContactStatus().." / "..v255.lastStatus)
     print('[DANXYS CONTACT]',v255.getContactStatus(),'IMPULSO:',v255.impulseError)
 end)
+v546.CornerProGroup:AddDivider()
+v546.CornerProGroup:AddLabel('BALL STUTTER / EFEITO VISUAL LOCAL (nao afeta servidor)')
+v546.CornerProGroup:AddToggle('danxysBallStutter',{
+  Text='BALL STUTTER VISUAL',Default=false,
+  Callback=function(enabled)
+    v255.stutterEnabled=enabled
+    if not enabled then v255.stopStutter() end
+  end,
+})
+v546.CornerProGroup:AddToggle('danxysBallStutterAuto',{
+  Text='Ativar em aceleracao proxima (aproximacao de contato)',Default=true,
+  Callback=function(enabled) v255.stutterAuto=enabled end,
+})
+v546.CornerProGroup:AddSlider('danxysStutterDuration',{
+  Text='Duracao do visual lag (seg)',Min=.2,Max=2.5,Default=1,Rounding=2,
+  Callback=function(value) v255.stutterDuration=value end,
+})
+v546.CornerProGroup:AddSlider('danxysStutterStep',{
+  Text='Intervalo dos travamentos (seg)',Min=.06,Max=.40,Default=.18,Rounding=2,
+  Callback=function(value) v255.stutterInterval=value end,
+})
+v546.CornerProGroup:AddButton('TESTAR TRAVAMENTO VISUAL AGORA',function()
+  local ok=v255.startStutter()
+  v174:Notify(ok and 'STUTTER VISUAL ATIVO / so na sua tela' or tostring(v255.stutterStatus))
+end)
+v546.CornerProGroup:AddDivider()
+v546.CornerProGroup:AddLabel('PHYSICS CLIENTE EXPERIMENTAL / desliga para testar Spike nativo')
+v546.CornerProGroup:AddToggle('danxysLocalPulse',{
+  Text='PULSE VELOCIDADE DA BOLA (LOCAL / TEST)',Default=false,
+  Callback=function(value) v255.localPulseEnabled=value end,
+})
+v546.CornerProGroup:AddSlider('danxysLocalPulseScale',{
+  Text='Multiplicador temporario da velocidade',Min=0,Max=1,Default=.12,Rounding=2,
+  Callback=function(value) v255.localPulseSpeedScale=value end,
+})
+v546.CornerProGroup:AddButton('TESTAR PULSE LOCAL (BOLA PERTO)',function()
+  local ok=v255.pulseLocalPhysics()
+  v174:Notify(ok and 'VELOCIDADE LOCAL TESTADA; O SERVIDOR PODE IGNORAR' or tostring(v255.impulseError))
+end)
+v546.CornerProGroup:AddButton('TESTAR IMPULSO DE SPEED LOCAL',function()
+  local old=v255.localBallImpulse
+  v255.localBallImpulse=true
+  v255.tryLocalImpulse()
+  v255.localBallImpulse=old
+  v174:Notify(v255.impulseError)
+end)
+v546.CornerProGroup:AddButton('DIAGNOSTICO DE STUTTER',function()
+  local result='STUTTER '..v255.stutterStatus..' | TRIGGERS '..v255.stutterTriggers..
+    ' | PULSES '..v255.localPulseCount
+  print('[DANXYS LAB]',result)
+  v174:Notify(result)
+end)
 v546.CornerProGroup:AddButton("Reiniciar diagnostico RAGE",function()
   v255.aimedCount=0;v255.seenCount=0;v255.skippedCount=0;v255.fastHitCount=0
   v255.lastStatus='DIAGNOSTICO REINICIADO'
 end)
-v546.CornerProGroup:AddLabel("Spike nativo preservado no hook-base; sem empilhar outros hooks.")
+v546.CornerProGroup:AddLabel("SPIKE NATIVO: sem hook de Spike no carregamento.")
 v546.CornerProGroup:AddLabel("Speed e impulso na bola sao locais e podem ser sobrescritos pelo servidor.")
 v546.CornerProGroup:AddLabel("Muito baixo depende da janela de contato / servidor, nao so da mira.")
 
@@ -9737,10 +9937,11 @@ v546.LeftGroupBox:AddToggle("sanju", {
   Default = false,
   Callback = function(value109)
     if value109 then
-      f67()
-    else
-      f68()
+      warn('[DANXYS] Sanju Tilt legado nao iniciado: bloqueado para proteger o Spike nativo.')
+      local t=toggles.sanju
+      if t and t.SetValue then t:SetValue(false,true) end
     end
+    f68()
   end,
 })
 
@@ -9750,10 +9951,11 @@ v546.LeftGroupBox:AddToggle("maxcharge", {
   Default = false,
   Callback = function(value110)
     if value110 then
-      f70()
-    else
-      f71()
+      warn('[DANXYS] Max Charge legado nao iniciado: bloqueado para proteger o Spike nativo.')
+      local t=toggles.maxcharge
+      if t and t.SetValue then t:SetValue(false,true) end
     end
+    f71()
   end,
 })
 
@@ -11833,7 +12035,7 @@ do
   -- Spike Rescue: nao ativa configuracoes legadas automaticamente. Carregue manualmente se quiser.
 
   -- Menu DanXys: RightShift para exibir/ocultar; botao '-' para minimizar.
-  v174:Notify("DANXYS SPIKE RESCUE v2.4 / NEON UI")
+  v174:Notify("DANXYS SPIKE LAB v2.5 / NEON UI")
   pcall(function() LOCOPANI_RAY_WINDOW:Notify({ title = "DANXYS", content = "Full menu loaded" }) end)
 end
 
