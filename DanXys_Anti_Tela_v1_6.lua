@@ -1,5 +1,5 @@
 --[[
-  DANXYS ANTI TELA | FULL NEON - SPIKE LAB v2.5
+  DANXYS ANTI TELA | FULL NEON - CONTROLS v2.6
   Spike Lab: SEM interceptar requests na inicializacao, para preservar o Spike nativo.
   A mira visual, stutter da bola e fisica local experimental tem controles separados.
   O servidor tem autoridade sobre colisao, potencia e fisica; valores locais nao garantem acerto.
@@ -196,6 +196,7 @@ do
   v22.TypeName_3 = TypeName_3
 
   function v22.unload()
+    if type(_G.disableHitbox) == 'function' then pcall(_G.disableHitbox) end
     if v22.TypeName_3 and v22.TypeName_3.inventory then
       pcall(function()
         local Module = require(replicatedStorage.Packages.Knit).GetController("InventoryController")
@@ -2445,13 +2446,17 @@ local function f37()
 end
 
 local function f38(p115)
-  for index25, value32 in ipairs(p115:GetDescendants()) do
-    if value32:IsA("BasePart") then
-      return value32
+  local preferred = nil
+  for _, part in ipairs(p115:GetDescendants()) do
+    if part:IsA("BasePart") and part.Name ~= "LOCOPANI.BALL"
+        and not part.Name:match("^DANXYS_") then
+      if part.Name:lower():find("ball", 1, true) then
+        return part
+      end
+      preferred = preferred or part
     end
   end
-
-  return nil
+  return preferred
 end
 
 local Color = Color3_2
@@ -2477,8 +2482,11 @@ local function f39(p116)
           Part.CFrame = f38_2.CFrame
           Part.Anchored = true
           Part.CanCollide = false
+          Part.CanTouch = false
+          Part.CanQuery = false
           Part.Transparency = transparency
           Part.Material = Enum.Material.ForceField
+          Part.CastShadow = false
           Part.Color = Color
           Part.Parent = value33
         end
@@ -2509,7 +2517,7 @@ do
     end
   end
 
-  workspaceService.ChildAdded:Connect(function(child)
+  f36(workspaceService.ChildAdded:Connect(function(child)
     if child:IsA("Model") and child.Name:match("^CLIENT_BALL_%d+$") then
       task.wait(0.1)
 
@@ -2517,9 +2525,9 @@ do
         f39(v179)
       end
     end
-  end)
+  end))
 
-  runService.RenderStepped:Connect(function() f40() end)
+  f36(runService.RenderStepped:Connect(function() f40() end))
 
   function enableHitbox()
     v178 = true
@@ -4015,7 +4023,7 @@ do
   -- do Interact desde o carregamento, inclusive com recursos desligados.
   -- Preservar a cadeia nativa de chamadas, sem hook de Spike instalado.
   DANXYS_BASE_HOOK_OK = false
-  print('[DANXYS v2.5] SPIKE NATIVO: nenhum hook adicionado na inicializacao')
+  print('[DANXYS v2.6] SPIKE NATIVO: nenhum hook adicionado na inicializacao')
 end
 
 local function f63()
@@ -4950,15 +4958,17 @@ do
     -- A bola real fica transparente APENAS para o cliente enquanto um proxy
     -- mostra posicoes em passos. O servidor e a fisica de contato permanecem iguais.
     local ghost, ghostBall, ghostOldTransparency = nil,nil,nil
+    local hiddenBallParts = {}
     local stutterSerial = 0
     local lastObservedBall,lastObservedSpeed,lastStutterTrigger = nil,nil,0
 
     function A.stopStutter()
         stutterSerial=stutterSerial+1
-        if ghostBall and ghostBall.Parent then
-            pcall(function()
-                ghostBall.LocalTransparencyModifier=ghostOldTransparency or 0
-            end)
+        for part, previous in pairs(hiddenBallParts) do
+            if part and part.Parent then
+                pcall(function() part.LocalTransparencyModifier=previous end)
+            end
+            hiddenBallParts[part]=nil
         end
         if ghost then pcall(function() ghost:Destroy() end) end
         ghost,ghostBall,ghostOldTransparency=nil,nil,nil
@@ -4974,19 +4984,32 @@ do
         local proxy=Instance.new('Part')
         proxy.Name='DANXYS_STUTTER_PROXY_LOCAL'
         proxy.Shape=Enum.PartType.Ball
-        proxy.Size=Vector3.new(math.max(.8,b.Size.X),math.max(.8,b.Size.Y),math.max(.8,b.Size.Z))
+        proxy.Size=Vector3.new(math.max(1,b.Size.X),math.max(1,b.Size.Y),math.max(1,b.Size.Z))
         proxy.Anchored=true
         proxy.CanCollide=false
         proxy.CanTouch=false
         proxy.CanQuery=false
         proxy.Material=Enum.Material.Neon
         proxy.Color=Color3.fromRGB(0,215,255)
-        proxy.Transparency=.12
+        proxy.Transparency=.03
         proxy.CFrame=b.CFrame
         proxy.Parent=workspaceService
         ghost=proxy
         ghostBall=b
         ghostOldTransparency=b.LocalTransparencyModifier
+        -- A bola pode ser um Model com varios BaseParts. Ocultar so PrimaryPart
+        -- nao basta, e foi uma das razoes do efeito parecer nao funcionar.
+        local model = b:FindFirstAncestorWhichIsA('Model')
+        if model and model.Name:match('^CLIENT_BALL_%d+$') then
+            for _,piece in ipairs(model:GetDescendants()) do
+                if piece:IsA('BasePart') and piece.Name ~= 'LOCOPANI.BALL'
+                    and not piece.Name:match('^DANXYS_') then
+                    hiddenBallParts[piece]=piece.LocalTransparencyModifier
+                end
+            end
+        else
+            hiddenBallParts[b]=b.LocalTransparencyModifier
+        end
         local mySerial=stutterSerial
         A.stutterTriggers=A.stutterTriggers+1
         A.stutterStatus='EFEITO VISUAL INICIADO'
@@ -4995,7 +5018,9 @@ do
             while ghost==proxy and stutterSerial==mySerial and os.clock()<ending
                and b and b.Parent and proxy.Parent do
                 local ok=pcall(function()
-                    b.LocalTransparencyModifier=1
+                    for piece in pairs(hiddenBallParts) do
+                        if piece and piece.Parent then piece.LocalTransparencyModifier=1 end
+                    end
                     proxy.CFrame=b.CFrame
                 end)
                 if not ok then break end
@@ -9008,10 +9033,15 @@ local DANXYS_UI = (function()
             ColorSequenceKeypoint.new(1, Color3.fromRGB(2, 5, 13))}),
             Rotation = 100}, shell)
         local scaler = e("UIScale", {Scale = 1}, shell)
+        local percent = 100
+        local minimizedScale = false
         local function fit()
             local cam = workspace.CurrentCamera
             local sz = cam and cam.ViewportSize or Vector2.new(1280, 720)
-            scaler.Scale = math.clamp(math.min(1, (sz.X - 20) / 900, (sz.Y - 20) / 615), 0.36, 1)
+            local available = math.min((sz.X - 22) / 900, (sz.Y - 22) / 615)
+            local wanted = math.clamp(percent / 100, 0.50, 1.5)
+            -- Barra minimizada fica 124x34 px independentemente da escala do menu aberto.
+            scaler.Scale = minimizedScale and 1 or math.clamp(math.min(wanted, available), 0.30, 1.5)
         end
         fit()
         local events = {}
@@ -9030,9 +9060,9 @@ local DANXYS_UI = (function()
         e("ImageLabel", {Name = "DanXysNeonLogo", Position = UDim2.fromOffset(14, 11),
             Size = UDim2.fromOffset(185, 53), Image = "rbxassetid://133068819773560",
             BackgroundTransparency = 1, ScaleType = Enum.ScaleType.Fit}, header)
-        local heading = txt(header, "DANXYS  //  OMNI", 17, {Font = Enum.Font.GothamBold,
+        local heading = txt(header, "DANXYS  //  CONTROL HUB", 17, {Font = Enum.Font.GothamBold,
             TextColor3 = K.cyan, Position = UDim2.fromOffset(212, 20), Size = UDim2.fromOffset(350, 25)})
-        txt(header, "CORNER PRO / AIM LAB  •  VOLLEYBALL", 10, {TextColor3 = K.dim,
+        txt(header, "BOLA  •  MIRA  •  VISUAL  •  AJUSTES", 10, {TextColor3 = K.dim,
             Position = UDim2.fromOffset(213, 46), Size = UDim2.fromOffset(440, 18)})
         local mini = click(header, "−", {AnchorPoint = Vector2.new(1, 0),
             Position = UDim2.new(1, -55, 0, 20), Size = UDim2.fromOffset(28, 28)})
@@ -9057,6 +9087,14 @@ local DANXYS_UI = (function()
         e("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder,
             Padding = UDim.new(0, 7), VerticalAlignment = Enum.VerticalAlignment.Top}, alerts)
         local window = {Visible = true, Mini = false, Tabs = {}, Controls = {}, _unloaded = false}
+        function window:SetScale(n)
+            percent = math.clamp(tonumber(n) or 100, 50, 150)
+            fit()
+            return percent
+        end
+        function window:GetScale()
+            return percent
+        end
         local active = nil
         local order = 0
         local function pick(tab)
@@ -9351,7 +9389,9 @@ local DANXYS_UI = (function()
         local normal = shell.Size
         local function minimize()
             window.Mini = not window.Mini
-            shell.Size = window.Mini and UDim2.fromOffset(150, 34) or normal
+            shell.Size = window.Mini and UDim2.fromOffset(132, 34) or normal
+            minimizedScale = window.Mini
+            fit()
             header.Size = window.Mini and UDim2.new(1, 0, 1, 0) or UDim2.new(1, 0, 0, 78)
             sidebar.Visible = not window.Mini
             content.Visible = not window.Mini
@@ -9366,10 +9406,17 @@ local DANXYS_UI = (function()
                 if node:IsA("TextLabel") and node ~= heading then node.Visible = not window.Mini end
             end
             local img = header:FindFirstChild("DanXysNeonLogo")
-            if img then img.Size = window.Mini and UDim2.fromOffset(76, 27) or UDim2.fromOffset(185, 53)
+            if img then img.Size = window.Mini and UDim2.fromOffset(56, 27) or UDim2.fromOffset(185, 53)
                 img.Position = window.Mini and UDim2.fromOffset(5, 3) or UDim2.fromOffset(14, 11) end
         end
         bind(mini.MouseButton1Click, minimize)
+        function window:SetMinimized(value)
+            local wanted = value == true
+            if window.Mini ~= wanted then minimize() end
+        end
+        function window:ToggleMinimize()
+            minimize()
+        end
         bind(shut.MouseButton1Click, function() window:Unload() end)
         function window:SetVisibility(visible)
             self.Visible = not not visible
@@ -9413,12 +9460,37 @@ local function LOCOPANI_SetRayfieldVisibility(visible)
   end
 end
 
-UserInputService.InputBegan:Connect(function(input, processed)
+local DANXYS_ENV = (type(getgenv) == "function" and getgenv()) or _G
+DANXYS_ENV.DanXysMenuKey = DANXYS_ENV.DanXysMenuKey or "RightShift"
+local danxysKeyboardConn = UserInputService.InputBegan:Connect(function(input, processed)
   if processed or UserInputService:GetFocusedTextBox() then return end
-  if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.RightShift then
+  if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+  local pressed = input.KeyCode.Name
+  if pressed == DANXYS_ENV.DanXysMenuKey then
     LOCOPANI_SetRayfieldVisibility(not LOCOPANI_RAY_VISIBLE)
+  elseif pressed == "F6" then
+    if LOCOPANI_RAY_WINDOW then LOCOPANI_RAY_WINDOW:ToggleMinimize() end
+  elseif pressed == "H" then
+    -- H: alterna a zona da bola, sincronizando o toggle principal.
+    local t = toggles and toggles.hitboxenable
+    if t and t.SetValue then t:SetValue(not t.Value) end
+  elseif pressed == "V" then
+    if v255 and v255.startStutter then
+      local ok=v255.startStutter()
+      if v174 then v174:Notify(ok and "TRAVAMENTO VISUAL TESTADO" or tostring(v255.stutterStatus)) end
+    end
+  elseif pressed == "G" then
+    if v255 then
+      v255.stutterEnabled = not v255.stutterEnabled
+      if not v255.stutterEnabled and v255.stopStutter then v255.stopStutter() end
+      if v174 then v174:Notify("BALL STUTTER VISUAL: " .. (v255.stutterEnabled and "ON" or "OFF")) end
+    end
   end
 end)
+local danxysSession = DANXYS_ENV.LOCOPANI_SESSION
+if danxysSession and type(danxysSession.links) == "table" then
+  table.insert(danxysSession.links, danxysKeyboardConn)
+end
 
 -- Keep the original window object for legacy functions/notifications, but hide its visual frame.
 LOCOPANIHUBWindow = v174:CreateWindow({
@@ -9457,6 +9529,7 @@ end
 
 
 -- Updates e criada primeiro para aparecer como a primeira categoria da UI principal.
+LOCOPANI_RAY_WINDOW.DanXysLabTab = LOCOPANI_RAY_WINDOW:CreateTab({name = "DanXys Lab"})
 local LOCOPANI_RAY_TABS = {
   Updates = LOCOPANI_RAY_WINDOW:CreateTab({ name = "Updates" }),
   Main = LOCOPANI_RAY_WINDOW:CreateTab({ name = "Main" }),
@@ -10110,7 +10183,7 @@ v546.AimSetGroup:AddDropdown("aimsettarget", {
 v546.HitboxGroup = v545.Main:AddRightGroupbox("Hitbox Settings")
 
 v546.HitboxGroup:AddToggle("hitboxenable", {
-  Text = "Enable Hitbox",
+  Text = "Bola: mostrar zona visual",
   Tooltip = "Turn Hitbox ON/OFF",
   Default = false,
   Callback = function(value123)
@@ -10123,8 +10196,8 @@ v546.HitboxGroup:AddToggle("hitboxenable", {
 })
 
 v546.HitboxGroup:AddSlider("hitboxsize", {
-  Text = "Hitbox Size",
-  Tooltip = "Reach in studs, the server refuses anything past 20",
+  Text = "Zona visual (escala)",
+  Tooltip = "Raio visual local (o servidor nao usa esta esfera para contato)",
   Default = 5,
   Min = 0,
   Max = 20,
@@ -11736,7 +11809,11 @@ do
     Values = { "50%", "75%", "100%", "125%", "150%", "175%", "200%" },
     Default = "100%",
     Text = "DPI Scale",
-    Callback = function(value179) v174:SetDPIScale((tonumber((value179:gsub("%%", ""))))) end,
+    Callback = function(value179)
+      if LOCOPANI_RAY_WINDOW and LOCOPANI_RAY_WINDOW.SetScale then
+        LOCOPANI_RAY_WINDOW:SetScale(tonumber((value179:gsub("%%", ""))) or 100)
+      end
+    end,
   })
 
   AddLeftGroupbox:AddSlider("UICornerSlider", {
@@ -11748,12 +11825,24 @@ do
     Callback = function(value180) LOCOPANIHUBWindow:SetCornerRadius(value180) end,
   })
 
+  AddLeftGroupbox:AddSlider("DanXysScale", {
+    Text = "Tamanho do menu aberto (%)",
+    Min = 50, Max = 150, Default = 100, Rounding = 0,
+    Callback = function(value)
+      if LOCOPANI_RAY_WINDOW then LOCOPANI_RAY_WINDOW:SetScale(value) end
+    end,
+  })
+  AddLeftGroupbox:AddLabel("Atalhos: F6 = minimizar | H = zona bola | G = stutter | V = teste visual")
   AddLeftGroupbox:AddDivider()
 
   AddLeftGroupbox:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", {
     Default = "RightShift",
-    NoUI = true,
-    Text = "Menu keybind",
+    NoUI = false,
+    Text = "Abrir / fechar menu",
+    Callback = function(key)
+      local env = (type(getgenv) == "function" and getgenv()) or _G
+      env.DanXysMenuKey = tostring(key or "RightShift")
+    end,
   })
 
   AddLeftGroupbox:AddButton("Unload", function()
@@ -12034,14 +12123,64 @@ do
   v174:SetConfigFolder("LOCOPANI")
   -- Spike Rescue: nao ativa configuracoes legadas automaticamente. Carregue manualmente se quiser.
 
-  -- Menu DanXys: RightShift para exibir/ocultar; botao '-' para minimizar.
-  v174:Notify("DANXYS SPIKE LAB v2.5 / NEON UI")
+  -- Menu DanXys: atalho configuravel + F6 minimizar; escala corrigida.
+  v174:Notify("DANXYS CONTROLS v2.6 / NEON UI")
   pcall(function() LOCOPANI_RAY_WINDOW:Notify({ title = "DANXYS", content = "Full menu loaded" }) end)
 end
 
--- https://discord.gg/34P22Bgnbk
+-- DANXYS v2.6 | GUIA RAPIDO / sem dependencia de fisica do servidor.
+do
+  local lab = LOCOPANI_RAY_WINDOW.DanXysLabTab
+  lab:CreateSection({name = "BOLA / ZONA DE ATAQUE"})
+  lab:CreateParagraph({Title = "Zona da bola", Content = "A esfera acompanha a bola no seu cliente. Ela NAO aumenta a hitbox validada pelo servidor."})
+  lab:CreateToggle({name = "Mostrar zona neon da bola", value = false,
+    callback = function(on)
+      local t = toggles and toggles.hitboxenable
+      if t and t.SetValue then t:SetValue(on)
+      elseif on then enableHitbox() else disableHitbox() end
+    end})
+  lab:CreateSlider({name = "Raio visual da zona", range={2,20}, increment=1, value=5,
+    callback = function(v)
+      setHitboxScale(v)
+      if options and options.hitboxsize and options.hitboxsize.SetValue then
+        options.hitboxsize:SetValue(v)
+      end
+    end})
+  lab:CreateSection({name = "MIRA E TRAVAMENTO / CLIENTE"})
+  lab:CreateParagraph({Title = "Limite tecnico", Content = "Alvo e arco sao estimativas; nao reescrevem a fisica real. O stutter so aparece nesta tela."})
+  lab:CreateToggle({name = "Exibir mira nos cantos", value = false,
+    callback = function(on)
+      local t = toggles and toggles.autocorner
+      if t and t.SetValue then t:SetValue(on) else v255.enabled=on end
+    end})
+  lab:CreateToggle({name = "Stutter visual da bola", value = false,
+    callback = function(on)
+      v255.stutterEnabled=on
+      if not on and v255.stopStutter then v255.stopStutter() end
+    end})
+  lab:CreateSlider({name = "Duracao visual do stutter (s)", range={.2,2.5}, increment=.1, value=1,
+    callback = function(v) v255.stutterDuration=v end})
+  lab:CreateButton({name = "Testar travamento visual AGORA",callback=function()
+      local ok=v255.startStutter()
+      v174:Notify(ok and "Efeito visual criado (apenas local)" or tostring(v255.stutterStatus))
+  end})
+  lab:CreateSection({name = "INTERFACE E DIAGNOSTICO"})
+  lab:CreateSlider({name = "Escala menu aberto (%)",range={50,150},increment=5,value=100,
+    callback=function(v) LOCOPANI_RAY_WINDOW:SetScale(v) end})
+  lab:CreateParagraph({Title = "Atalhos", Content = "RightShift (ou tecla escolhida): mostrar menu. F6: minimizar. H: zona bola. G: stutter visual. V: testar stutter."})
+  lab:CreateButton({name = "Diagnosticar bola",callback=function()
+      local message=v255.getContactStatus()
+      print("[DANXYS LAB]",message," / ",v255.impulseError)
+      v174:Notify(message)
+  end})
+  lab:CreateButton({name = "Parar efeitos experimentais",callback=function()
+      v255.emergencyReset()
+      disableHitbox()
+      v174:Notify("Efeitos locais desligados; teste Spike nativo")
+  end})
+end
 
 -- Show main gameplay controls first.
 if LOCOPANI_RAY_WINDOW and LOCOPANI_RAY_WINDOW.SelectTab then
-  LOCOPANI_RAY_WINDOW:SelectTab("Main")
+  LOCOPANI_RAY_WINDOW:SelectTab("DanXys Lab")
 end
